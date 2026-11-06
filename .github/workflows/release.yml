@@ -2,6 +2,8 @@ name: Release
 on:
   push:
     tags: ['v*']
+  # Run by hand from the Actions tab: tags the current main with the version in module.json and releases it.
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -17,9 +19,13 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run all
+      - id: version
+        run: echo "tag=v$(node -p "require('./module.json').version")" >> "$GITHUB_OUTPUT"
       - run: cd dist/coc7-mvp-chase && zip -r ../coc7-mvp-chase.zip .
       - uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ github.ref_type == 'tag' && github.ref_name || steps.version.outputs.tag }}
+          target_commitish: ${{ github.sha }}
           files: |
             dist/coc7-mvp-chase.zip
             dist/coc7-mvp-chase/module.json
