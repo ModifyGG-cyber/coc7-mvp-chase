@@ -9,6 +9,7 @@ import {
   beginChase,
   clearChase,
   escapeHtml,
+  isPlayerControlled,
   loadChase,
   mutateChase,
   resolveFailure,
@@ -89,7 +90,9 @@ function trackerClass(): AppV2Class {
     private listening = false;
 
     _renderHTML(): Promise<string> {
-      return Promise.resolve(renderTracker(loadChase(), Boolean(g().game.user?.isGM)));
+      const state = loadChase();
+      const players = new Set((state?.participants ?? []).filter(p => isPlayerControlled(p)).map(p => p.id));
+      return Promise.resolve(renderTracker(state, Boolean(g().game.user?.isGM), id => players.has(id)));
     }
 
     _replaceHTML(result: string, content: HTMLElement): void {
@@ -236,6 +239,13 @@ function trackerClass(): AppV2Class {
         if (kind === 'check') return this.run(() => updateLocation(index, { check: parseChallenge(input.value) }));
         if (kind === 'difficulty') return this.run(() => updateLocation(index, { difficulty: input.value as Coc7Difficulty }));
       }
+      if (input.dataset['field'] === 'promptPlayers') {
+        const on = (input as HTMLInputElement).checked;
+        return this.run(() => mutateChase(state => {
+          state.promptPlayers = on;
+          return undefined;
+        }));
+      }
       const pid = input.closest<HTMLElement>('[data-pid]')?.dataset['pid'];
       if (pid && input.dataset['field'] === 'mvp') {
         const mvp = parseInt(input.value, 10);
@@ -307,7 +317,11 @@ function options(values: string[], selected: string, labels?: Record<string, str
   return values.map(v => `<option value="${esc(v)}"${v === selected ? ' selected' : ''}>${esc(labels?.[v] ?? v)}</option>`).join('');
 }
 
-export function renderTracker(state: ChaseState | null, isGM: boolean): string {
+function bonusSelect(): string {
+  return `<label>Bonus <select name="bonusDice">${options(['2', '1', '0', '-1', '-2'], '0', { '2': '+2 bonus', '1': '+1 bonus', '0': 'none', '-1': '1 penalty', '-2': '2 penalty' })}</select></label>`;
+}
+
+export function renderTracker(state: ChaseState | null, isGM: boolean, playerOwned: (id: string) => boolean = () => false): string {
   const datalist = `<datalist id="mvpc-chase-checks">${SUGGESTIONS.map(s => `<option value="${esc(s)}"></option>`).join('')}</datalist>`;
   if (!state) {
     if (!isGM) return `${STYLE}<p>No chase is running.</p>`;
@@ -350,6 +364,7 @@ export function renderTracker(state: ChaseState | null, isGM: boolean): string {
     parts.push(`<div class="mvpc-row"><button type="button" data-chase="add-quarry"><i class="fa-solid fa-person-running"></i> Add selected as quarry</button>
       <button type="button" data-chase="add-pursuer"><i class="fa-solid fa-person-walking-arrow-right"></i> Add selected as pursuers</button></div>
       <div class="mvpc-row"><label><input type="checkbox" name="headStart"> Quarry has a clear head start (pursuers take a penalty die on their first challenge)</label></div>
+      <div class="mvpc-row"><label><input type="checkbox" data-field="promptPlayers"${state.promptPlayers !== false ? ' checked' : ''}> Players roll their own checks and 1D6, and choose Luck or push</label></div>
       <div class="mvpc-row"><button type="button" data-chase="start"><i class="fa-solid fa-flag-checkered"></i> Start chase</button></div>
       <p class="mvpc-hint">Order each round: quarry first, then pursuers, highest DEX first. MvP = MOV, halved for a major wound.</p>`);
   }
@@ -380,28 +395,39 @@ export function renderTracker(state: ChaseState | null, isGM: boolean): string {
     const loc = state.locations.find(l => l.index === current.location);
     const challenge = loc?.check ? checkLabel(loc.check, loc.difficulty) : 'no challenge set';
     let turn = `<div class="mvpc-turn"><div><b>${esc(current.name)}</b>'s turn in ${esc(locationLabel(state, current.location))}: <b>${esc(challenge)}</b>${current.nextPenaltyDice ? ` with ${String(current.nextPenaltyDice)} penalty die` : ''}.</div>`;
+    const prompting = state.promptPlayers !== false && playerOwned(current.id);
     if (state.pending) {
       const pend = state.pending;
-      turn += `<div class="mvpc-row">Failed: ${String(pend.total)} vs ${String(pend.target)}.</div>`;
+      turn += `<div class="mvpc-row">Failed: ${String(pend.total)} vs ${String(pend.target)}.${prompting ? ` Waiting for ${esc(current.name)}'s player to choose in chat, or choose for them:` : ''}</div>`;
       if (isGM) {
         turn += `<div class="mvpc-row"><button type="button" data-chase="take-loss"><i class="fa-solid fa-dice-six"></i> Lose 1D6 MvP</button>
           ${pend.luckNeeded !== null ? `<button type="button" data-chase="luck"><i class="fa-solid fa-clover"></i> Spend ${String(pend.luckNeeded)} Luck</button>` : ''}
           ${pend.canPush ? `<button type="button" data-chase="push" title="Failing a pushed roll means out of the chase"><i class="fa-solid fa-hand-fist"></i> Push</button>` : ''}</div>`;
       }
     } else if (state.awaiting) {
-      turn += `<div class="mvpc-row">Waiting for ${esc(name(state.awaiting.participantId))} to roll ${esc(checkLabel(state.awaiting.check, state.awaiting.difficulty))}…</div>`;
-      if (isGM) turn += `<div class="mvpc-row"><button type="button" data-chase="roll">Roll it for them</button><button type="button" data-chase="pass">Passed</button><button type="button" data-chase="fail">Failed</button></div>`;
+      const aw = state.awaiting;
+      turn += `<div class="mvpc-row">Waiting for ${esc(name(aw.participantId))} to ${aw.pushed ? 'push' : 'roll'} ${esc(checkLabel(aw.check, aw.difficulty))}${aw.bonusDice ? ` (${aw.bonusDice > 0 ? '+' : ''}${String(aw.bonusDice)} dice)` : ''} from the button in chat…</div>`;
+      if (isGM) {
+        turn += `<div class="mvpc-row">${aw.pushed ? '' : `${bonusSelect()}<label title="Also making a ranged attack: penalty die on both rolls"><input type="checkbox" name="shooting"> Shooting</label>`}
+          <button type="button" data-chase="request" title="Post the roll button again${aw.pushed ? '' : ' with this bonus'}"><i class="fa-solid fa-comment-dots"></i> Ask again</button></div>
+          <div class="mvpc-row"><button type="button" data-chase="roll">Roll it for them</button><button type="button" data-chase="pass">Passed</button><button type="button" data-chase="fail">Failed</button>${aw.pushed ? '' : '<button type="button" data-chase="skip" title="Does something else this turn">Skip</button>'}</div>`;
+      }
     } else if (isGM) {
-      turn += `<div class="mvpc-row"><label>Dice <select name="bonusDice">${options(['2', '1', '0', '-1', '-2'], '0', { '2': '+2 bonus', '1': '+1 bonus', '0': 'none', '-1': '1 penalty', '-2': '2 penalty' })}</select></label>
+      const ask = `<button type="button" data-chase="request" title="Post a roll button for the player"><i class="fa-solid fa-comment-dots"></i> Ask player</button>`;
+      const roll = `<button type="button" data-chase="roll"><i class="fa-solid fa-dice-d20"></i> ${playerOwned(current.id) ? 'Roll for them' : 'Roll'}</button>`;
+      turn += `<div class="mvpc-row">${bonusSelect()}
         <label title="Also making a ranged attack: penalty die on both rolls"><input type="checkbox" name="shooting"> Shooting</label>
         <label>Use instead <input type="text" name="useInstead" list="mvpc-chase-checks" placeholder="e.g. DEX" style="width:8em"></label></div>
-        <div class="mvpc-row"><button type="button" data-chase="roll"><i class="fa-solid fa-dice-d20"></i> Roll</button>
-        <button type="button" data-chase="request" title="Post a roll button for the player"><i class="fa-solid fa-comment-dots"></i> Ask player</button>
+        <div class="mvpc-row">${playerOwned(current.id) ? ask + roll : roll + ask}
         <button type="button" data-chase="pass">Passed</button><button type="button" data-chase="fail">Failed</button>
         <button type="button" data-chase="skip" title="Does something else this turn">Skip</button></div>`;
     }
     turn += '</div>';
     parts.push(turn);
+  }
+
+  if (isGM && state.round > 0 && !state.outcome) {
+    parts.push(`<div class="mvpc-row"><label><input type="checkbox" data-field="promptPlayers"${state.promptPlayers !== false ? ' checked' : ''}> Players roll their own checks and 1D6, and choose Luck or push</label></div>`);
   }
 
   if (state.log.length) {

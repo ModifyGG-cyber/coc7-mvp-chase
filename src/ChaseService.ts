@@ -99,6 +99,8 @@ function newId(): string {
 
 interface ActorLike extends Coc7Actor {
   img?: string;
+  hasPlayerOwner?: boolean;
+  testUserPermission?(user: unknown, level: string): boolean;
   system: Coc7Actor['system'] & { attribs?: Record<string, { value?: number | null; max?: number | null }> };
 }
 
@@ -178,14 +180,61 @@ function rawValue(actor: ActorLike, check: ChaseCheck, p: ChaseParticipant): num
 
 // ---------- chat ----------
 
-async function post(state: ChaseState, html: string, options: { whisperGM?: boolean } = {}): Promise<void> {
+async function post(state: ChaseState, html: string, options: { whisperGM?: boolean; flags?: Record<string, unknown> } = {}): Promise<void> {
   const { ChatMessage } = getCoc7Globals();
   const whisper = options.whisperGM ? ChatMessage.getWhisperRecipients?.('GM').map(u => u.id) : undefined;
   await ChatMessage.create({
     content: `<div class="mvpc-chase-card"><h4>🏃 ${escapeHtml(state.name)}</h4>${html}</div>`,
     speaker: { alias: 'Chase' },
-    ...(whisper?.length ? { whisper } : {})
+    ...(whisper?.length ? { whisper } : {}),
+    ...(options.flags ? { flags: { [CHASE_MODULE_ID]: options.flags } } : {})
   });
+}
+
+// ---------- players roll their own ----------
+
+export function promptsPlayers(state: ChaseState): boolean {
+  return state.promptPlayers !== false;
+}
+
+/** True when a player owns this character, so the player rolls and chooses for it. */
+export function isPlayerControlled(p: ChaseParticipant): boolean {
+  try {
+    return actorOf(p).hasPlayerOwner === true;
+  } catch {
+    return false;
+  }
+}
+
+function playerRolls(state: ChaseState, p: ChaseParticipant): boolean {
+  return promptsPlayers(state) && isPlayerControlled(p);
+}
+
+/** Posts a roll button for the character's player; their CoC7 check card resolves the turn. */
+async function requestRoll(
+  state: ChaseState,
+  p: ChaseParticipant,
+  challenge: { check: ChaseCheck; difficulty: Coc7Difficulty; bonusDice: number },
+  pushed: boolean
+): Promise<void> {
+  state.awaiting = { participantId: p.id, check: challenge.check, difficulty: challenge.difficulty, bonusDice: challenge.bonusDice, pushed };
+  await saveChase(state);
+  const what = pushed ? `push the roll for ${escapeHtml(locationLabel(state, p.location))} (failing means out of the chase)` : `roll for ${escapeHtml(locationLabel(state, p.location))}`;
+  await post(state, `<p><b>${escapeHtml(p.name)}</b>, ${what}:</p><p>${rollLink(p, challenge.check, challenge.difficulty, challenge.bonusDice)}</p>`);
+}
+
+/** When the next character belongs to a player, asks that player to roll. */
+async function autoPrompt(state: ChaseState): Promise<void> {
+  if (!promptsPlayers(state) || state.outcome || state.pending || state.awaiting || state.round === 0) return;
+  const p = currentParticipant(state);
+  if (!p || !isPlayerControlled(p)) return;
+  const loc = state.locations.find(l => l.index === p.location);
+  if (!loc?.check) return;
+  try {
+    await requestRoll(state, p, challengeFor(state, p), false);
+  } catch (error) {
+    console.warn('MvP Chase | Could not ask the player to roll:', error);
+  }
 }
 
 export function escapeHtml(text: string): string {
@@ -297,6 +346,7 @@ export async function startNewChase(input: {
   await saveChase(state);
   if (!input.setupOnly) {
     await post(state, `<p>The chase begins in <b>${escapeHtml(locationLabel(state, 1))}</b>.${input.headStart ? ' The quarry has a head start: pursuers take a penalty die on their first challenge.' : ''}</p>${standings(state)}${nextUp(state)}`);
+    await autoPrompt(state);
   }
   return viewOf(state);
 }
@@ -307,6 +357,7 @@ export async function beginChase(headStart: boolean): Promise<Coc7ChaseView> {
   startChase(state, { headStart });
   await saveChase(state);
   await post(state, `<p>The chase begins in <b>${escapeHtml(locationLabel(state, 1))}</b>.${headStart ? ' The quarry has a head start: pursuers take a penalty die on their first challenge.' : ''}</p>${standings(state)}${nextUp(state)}`);
+  await autoPrompt(state);
   return viewOf(state);
 }
 
@@ -329,7 +380,12 @@ export async function updateLocation(index: number, update: { name?: string; che
     ...(update.check !== undefined ? { check: update.check ? checkFromRef(update.check) : null } : {}),
     ...(difficulty ? { difficulty } : {})
   });
+  // The challenge changed under a roll already asked for: ask again with the new one.
+  const asked = state.awaiting;
+  const changed = update.check !== undefined || difficulty !== undefined;
+  if (changed && asked && !asked.pushed && state.participants.find(p => p.id === asked.participantId)?.location === index) state.awaiting = null;
   await saveChase(state);
+  await autoPrompt(state);
   return viewOf(state);
 }
 
@@ -344,6 +400,7 @@ export async function mutateChase(change: (state: ChaseState) => string | undefi
     const ended = state.outcome && !before ? standings(state) : '';
     await post(state, `<p>${escapeHtml(note)}</p>${ended}${nextUp(state)}`);
   }
+  await autoPrompt(state);
   return viewOf(state);
 }
 
@@ -404,6 +461,19 @@ async function announceRoll(state: ChaseState, p: ChaseParticipant, outcome: 'mo
     const pending = state.pending;
     const luck = pending?.luckNeeded !== null && pending?.luckNeeded !== undefined ? ` Spend ${String(pending.luckNeeded)} Luck to pass,` : '';
     const push = pending?.canPush ? ' push the roll (failing it means out of the chase),' : '';
+    if (pending && playerRolls(state, p)) {
+      const buttons = [
+        `<button type="button" data-mvpc-choice="take-loss"><i class="fa-solid fa-dice-six"></i> Roll 1D6 MvP loss</button>`,
+        pending.luckNeeded !== null ? `<button type="button" data-mvpc-choice="luck"><i class="fa-solid fa-clover"></i> Spend ${String(pending.luckNeeded)} Luck</button>` : '',
+        pending.canPush ? `<button type="button" data-mvpc-choice="push" title="Failing a pushed roll means out of the chase"><i class="fa-solid fa-hand-fist"></i> Push the roll</button>` : ''
+      ].join('');
+      await post(
+        state,
+        `<p><b>${escapeHtml(p.name)}</b> fails ${escapeHtml(check)} (${String(roll.total)} vs ${String(roll.target)}). Choose:</p><div class="mvpc-choices">${buttons}</div>`,
+        { flags: { choice: { chaseId: state.id, participantId: p.id, actorUuid: p.actorUuid, total: pending.total } } }
+      );
+      return;
+    }
     await post(state, `<p><b>${escapeHtml(p.name)}</b> fails ${escapeHtml(check)} (${String(roll.total)} vs ${String(roll.target)}).${luck}${push} or lose 1D6 MvP.</p>`);
   }
 }
@@ -429,7 +499,8 @@ export async function takeTurn(input: TakeTurnInput): Promise<Coc7ChaseTurnResul
   const bonus = input.bonusDice === undefined ? 0 : input.bonusDice;
   if (!Number.isInteger(bonus) || bonus < -2 || bonus > 2) throw new Error('bonusDice must be an integer from -2 to 2');
   const difficulty = checkDifficulty(input.difficulty);
-  const challenge = challengeFor(state, p, {
+  const pushedAsk = state.awaiting?.participantId === p.id && state.awaiting.pushed ? state.awaiting : null;
+  const challenge = pushedAsk ?? challengeFor(state, p, {
     bonusDice: bonus,
     shooting: input.shooting ?? false,
     ...(input.check ? { check: checkFromRef(input.check) } : {}),
@@ -439,17 +510,13 @@ export async function takeTurn(input: TakeTurnInput): Promise<Coc7ChaseTurnResul
   const mode = input.mode ?? 'roll';
 
   if (mode === 'request') {
-    state.awaiting = { participantId: p.id, check: challenge.check, difficulty: challenge.difficulty, bonusDice: challenge.bonusDice, pushed: false };
-    await saveChase(state);
-    const { ChatMessage } = getCoc7Globals();
-    await ChatMessage.create({
-      content: `<div class="mvpc-chase-card"><h4>🏃 ${escapeHtml(state.name)}</h4><p><b>${escapeHtml(p.name)}</b>, roll for ${escapeHtml(locationLabel(state, p.location))}:</p><p>${rollLink(p, challenge.check, challenge.difficulty, challenge.bonusDice)}</p></div>`,
-      speaker: { alias: 'Chase' }
-    });
+    await requestRoll(state, p, challenge, pushedAsk !== null);
     return { ...viewOf(state), result: `Asked ${p.name} to roll ${label}. The turn resolves when their check card appears.` };
   }
 
   let roll: RollOutcome;
+  const wasPushed = pushedAsk !== null;
+  state.awaiting = null;
   if (mode === 'pass' || mode === 'fail') {
     const total = input.total !== undefined ? Math.floor(input.total) : null;
     const actor = actorOf(p);
@@ -458,7 +525,7 @@ export async function takeTurn(input: TakeTurnInput): Promise<Coc7ChaseTurnResul
   } else {
     roll = await rollCheck(state, p, challenge.check, challenge.difficulty, challenge.bonusDice, input.blind ?? false);
   }
-  return finishRoll(state, p, roll, challenge, false, mode === 'fail' && input.total === undefined);
+  return finishRoll(state, p, roll, challenge, wasPushed, mode === 'fail' && input.total === undefined);
 }
 
 async function finishRoll(
@@ -474,6 +541,7 @@ async function finishRoll(
   if (noLuck && state.pending) state.pending.luckNeeded = null;
   await saveChase(state);
   await announceRoll(state, p, outcome, roll, label);
+  await autoPrompt(state);
   const result =
     outcome === 'moved'
       ? `${p.name} passed ${label} and moved to ${locationLabel(state, p.location)}.`
@@ -513,6 +581,7 @@ export async function resolveFailure(action: 'take-loss' | 'luck' | 'push', fixe
         ? `<p><b>${escapeHtml(p.name)}</b> loses ${String(loss)} MvP (${String(change.before)} → ${String(change.after)}) but stumbles through to ${escapeHtml(locationLabel(state, p.location))}.</p>`
         : `<p><b>${escapeHtml(p.name)}</b> loses ${String(loss)} MvP (${String(change.before)} → 0) and is ${change.outcome === 'caught' ? '<b>caught</b>' : '<b>out of the chase</b>'}.</p>${standings(state)}`;
     await post(state, `${text}${nextUp(state)}`);
+    await autoPrompt(state);
     return { ...viewOf(state), result: `${p.name} lost ${String(loss)} MvP (${String(change.before)} → ${String(change.after)}): ${change.outcome}.`, loss };
   }
 
@@ -526,13 +595,43 @@ export async function resolveFailure(action: 'take-loss' | 'luck' | 'push', fixe
     const spent = luckSuccess(state);
     await saveChase(state);
     await post(state, `<p><b>${escapeHtml(p.name)}</b> spends ${String(spent)} Luck (${String(have)} → ${String(have - spent)}) to pass and moves on to ${escapeHtml(locationLabel(state, p.location))}.</p>${nextUp(state)}`);
+    await autoPrompt(state);
     return { ...viewOf(state), result: `${p.name} spent ${String(spent)} Luck and passed.` };
   }
 
   // push
   const was = beginPush(state);
+  if (playerRolls(state, p)) {
+    await requestRoll(state, p, { check: was.check, difficulty: was.difficulty, bonusDice: was.bonusDice }, true);
+    return { ...viewOf(state), result: `Asked ${p.name} to push ${checkLabel(was.check, was.difficulty)}.` };
+  }
   const roll = await rollCheck(state, p, was.check, was.difficulty, was.bonusDice, false);
   return finishRoll(state, p, roll, { check: was.check, difficulty: was.difficulty, bonusDice: was.bonusDice }, true, false);
+}
+
+/** A player picked an option on their failure card (sent to the Keeper's client over the module socket). */
+export interface PlayerChoice {
+  chaseId: string;
+  participantId: string;
+  userId: string;
+  action: 'take-loss' | 'luck' | 'push';
+  loss?: number;
+}
+
+export async function handlePlayerChoice(choice: PlayerChoice, user: unknown): Promise<Coc7ChaseTurnResult | null> {
+  const state = loadChase();
+  const pending = state?.pending;
+  if (!state || state.id !== choice.chaseId || !pending || pending.participantId !== choice.participantId) return null;
+  const p = getParticipant(state, pending.participantId);
+  const actor = actorOf(p);
+  if (!actor.testUserPermission?.(user, 'OWNER')) throw new Error(`That player does not own ${p.name}.`);
+  if (!['take-loss', 'luck', 'push'].includes(choice.action)) return null;
+  if (choice.action === 'take-loss') {
+    const loss = Math.floor(Number(choice.loss));
+    if (!Number.isFinite(loss) || loss < 1 || loss > 6) throw new Error('The 1D6 loss must be 1 to 6.');
+    return resolveFailure('take-loss', loss);
+  }
+  return resolveFailure(choice.action);
 }
 
 /**

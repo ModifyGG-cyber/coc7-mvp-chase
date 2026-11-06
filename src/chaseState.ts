@@ -91,6 +91,8 @@ export interface ChaseState {
   pending: ChasePending | null;
   /** A roll asked of a player: the next CoC7 check card from that actor resolves the turn. */
   awaiting: ChaseAwaiting | null;
+  /** Players roll their own checks and choose their own failure options. Missing = on. */
+  promptPlayers?: boolean;
   /** Set when the chase is over. */
   outcome: string | null;
   /** Most recent last; trimmed to LOG_LIMIT. */

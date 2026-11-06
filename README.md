@@ -26,12 +26,13 @@ A Foundry VTT module that runs chases with the **Keeper Companion's optional "Ne
 2. Name the chase and Location 1, then click **New chase**.
 3. Select tokens, then click **Add selected as quarry** or **Add selected as pursuers**. Tick the head-start box if it applies, then click **Start chase**.
 4. Type a challenge for each location (for example `Climb`, `DEX` or `Luck`), and pick its difficulty.
-5. On each turn, click one of these:
+5. When it's a player character's turn, the player gets a roll button in chat straight away, and their roll resolves the turn. If they fail, they get buttons in chat to **roll their own 1D6** MvP loss, **spend Luck** or **push** the roll. Untick "Players roll their own checks" to roll everything yourself.
+6. For the Keeper's characters, or to override, click one of these (set **Bonus** first for bonus or penalty dice):
    - **Roll** rolls as the character, using the normal CoC7 check card.
-   - **Ask player** posts a roll button. The player's roll resolves the turn.
+   - **Ask player** posts a roll button (again).
    - **Passed** or **Failed** records a roll made at the table.
    - **Skip** passes the turn.
-6. After a failure, choose **Lose 1D6 MvP**, **Spend Luck** or **Push**.
+7. After a failure, choose **Lose 1D6 MvP**, **Spend Luck** or **Push** in the tracker, or let the player choose in chat.
 
 Every step is posted to chat. Players see a read-only tracker.
 

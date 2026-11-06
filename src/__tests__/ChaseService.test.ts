@@ -1,7 +1,7 @@
 /**
  * The chase service against a fake Foundry: settings store, CoC7 actors whose checks post cards, chat and dice.
  */
-import { getChaseView, handleCheckCard, resolveFailure, startNewChase, takeTurn, updateLocation } from '../ChaseService';
+import { getChaseView, handleCheckCard, handlePlayerChoice, resolveFailure, startNewChase, takeTurn, updateLocation } from '../ChaseService';
 
 type Hook = (...args: unknown[]) => void;
 
@@ -22,7 +22,7 @@ interface FakeActor {
 let store: Record<string, unknown>;
 let hooks: Record<string, Map<number, Hook>>;
 let nextRolls: number[];
-let chat: { content?: string; flavor?: string }[];
+let chat: { content?: string; flavor?: string; flags?: Record<string, { choice?: { chaseId: string; participantId: string } }> }[];
 let actors: Map<string, FakeActor>;
 
 function rollQueue(n: number): number {
@@ -200,4 +200,60 @@ test('a missing skill falls back to DEX by tier, and a player roll card resolves
   const g = await takeTurn({});
   expect(g.roll).toMatchObject({ total: 13, target: 13, passed: true });
   expect(chat.at(-2)?.content ?? chat.at(-1)?.content).toMatch(/lacks the skill/);
+});
+
+function checkCard(uuid: string, threshold: number, base: number, unit: number, opts: { difficulty?: number; pool?: number } = {}) {
+  return {
+    id: `card${String(chat.length)}`,
+    flags: { CoC7: { load: { as: 'CoC7Check', actorUuid: uuid, dicePool: { threshold, difficulty: opts.difficulty ?? 1, currentPoolModifier: opts.pool ?? 0, rolledDice: [{ rolled: true, baseDie: base, unitDie: unit, bonusDice: [], penaltyDice: [] }] } } } }
+  };
+}
+
+test('players are asked to roll by default, roll their own 1D6, and can push', async () => {
+  const inv = Object.assign(makeActor('inv', { dex: 70, mov: 8, skills: { Climb: 40 } }), {
+    hasPlayerOwner: true,
+    testUserPermission: (user: { id: string }) => user.id === 'player'
+  });
+  actors.set('inv', inv);
+  actors.set('cultist', makeActor('cultist', { dex: 50, mov: 7, skills: { Climb: 30 } }));
+
+  await startNewChase({ quarry: [{ actorId: 'inv' }], pursuers: [{ actorId: 'cultist' }], firstCheck: { kind: 'skill', name: 'Climb' } });
+  // The investigator belongs to a player: the roll button is posted at once.
+  expect(getChaseView().awaiting).toMatchObject({ participant: 'inv' });
+  expect(chat.at(-1)?.content).toContain('@coc7.check[subtype:skill,name:Climb]');
+
+  // The player fails (75 vs 40): the failure card offers the choices, flagged for the player's buttons.
+  expect(await handleCheckCard(checkCard('Actor.inv', 40, 7, 5))).toBe(true);
+  const choiceCard = chat.at(-1);
+  expect(choiceCard?.content).toContain('data-mvpc-choice="take-loss"');
+  expect(choiceCard?.content).toContain('Spend 35 Luck');
+  expect(choiceCard?.content).toContain('data-mvpc-choice="push"');
+  const flag = choiceCard?.flags?.['coc7-mvp-chase']?.choice;
+  expect(flag).toMatchObject({ participantId: 'inv' });
+  if (!flag) throw new Error('no flag');
+
+  // Someone who doesn't own the investigator can't choose.
+  await expect(handlePlayerChoice({ chaseId: flag.chaseId, participantId: 'inv', userId: 'other', action: 'luck' }, { id: 'other' })).rejects.toThrow(/does not own/);
+
+  // The player pushes: a pushed roll button is posted, and the pushed roll passes.
+  await handlePlayerChoice({ chaseId: flag.chaseId, participantId: 'inv', userId: 'player', action: 'push' }, { id: 'player' });
+  expect(getChaseView().awaiting).toMatchObject({ participant: 'inv' });
+  expect(chat.at(-1)?.content).toMatch(/push the roll/);
+  expect(await handleCheckCard(checkCard('Actor.inv', 40, 2, 1))).toBe(true);
+  expect(getChaseView().participants?.find(p => p.name === 'inv')?.location).toBe(2);
+
+  // The cultist is the Keeper's: nothing is posted for it.
+  expect(getChaseView().awaiting).toBeNull();
+  nextRolls = [3];
+  await takeTurn({});
+
+  // Round 2: the player is asked again (location 2 needs a challenge first), fails, and rolls their own 1D6.
+  await updateLocation(2, { check: { kind: 'skill', name: 'Climb' }, difficulty: 'hard' });
+  expect(getChaseView().awaiting).toMatchObject({ participant: 'inv', challenge: 'Hard Climb' });
+  await handleCheckCard(checkCard('Actor.inv', 40, 5, 5, { difficulty: 2 }));
+  const second = chat.at(-1)?.flags?.['coc7-mvp-chase']?.choice;
+  if (!second) throw new Error('no flag');
+  await expect(handlePlayerChoice({ chaseId: second.chaseId, participantId: 'inv', userId: 'player', action: 'take-loss', loss: 9 }, { id: 'player' })).rejects.toThrow(/1 to 6/);
+  const lost = await handlePlayerChoice({ chaseId: second.chaseId, participantId: 'inv', userId: 'player', action: 'take-loss', loss: 3 }, { id: 'player' });
+  expect(lost?.participants?.find(p => p.name === 'inv')).toMatchObject({ mvp: 5, location: 3 });
 });
