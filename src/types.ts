@@ -17,7 +17,7 @@ export interface Coc7ChaseActorRef extends Coc7ActorParams {
 }
 
 export interface Coc7ChaseCheckRef {
-  /** skill uses the sheet name ("Climb"); characteristic uses str, con, siz, dex, app, int, pow or edu; attribute lck. */
+  /** skill uses the sheet name ("Athletics"); characteristic uses str, con, siz, dex, app, int, pow or edu; attribute lck. */
   kind: Coc7CheckKind;
   name: string;
 }

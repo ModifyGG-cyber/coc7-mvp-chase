@@ -24,3 +24,12 @@ describe('chase tracker', () => {
     expect(player).toContain('Dodge');
   });
 });
+
+test('the Keeper gets an Add location button and sees every planned location', () => {
+  const s = createChase({ id: 'c' });
+  setLocation(s, 4, { name: 'the docks', check: { kind: 'skill', name: 'Swim' } });
+  const html = renderTracker(s, true);
+  expect(html).toContain('data-chase="add-location"');
+  expect(html).toContain('the docks');
+  expect(renderTracker(s, false)).not.toContain('data-chase="add-location"');
+});
