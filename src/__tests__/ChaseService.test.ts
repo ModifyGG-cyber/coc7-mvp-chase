@@ -1,7 +1,7 @@
 /**
  * The chase service against a fake Foundry: settings store, CoC7 actors whose checks post cards, chat and dice.
  */
-import { deleteActiveChase, getChaseView, handleCheckCard, listChases, setAsideChase, switchChase, handlePlayerChoice, resolveFailure, rollFromButton, startNewChase, takeTurn, updateLocation, type RollFlag } from '../ChaseService';
+import { undoChase, deleteActiveChase, getChaseView, handleCheckCard, listChases, setAsideChase, switchChase, handlePlayerChoice, resolveFailure, rollFromButton, startNewChase, takeTurn, updateLocation, type RollFlag } from '../ChaseService';
 
 type Hook = (...args: unknown[]) => void;
 
@@ -191,7 +191,7 @@ test('a missing skill falls back to DEX by tier, and a player roll card resolves
   const asked = await takeTurn({ mode: 'request' });
   expect(asked.awaiting).toMatchObject({ participant: 'q' });
   expect(chat.at(-1)?.content).toContain('data-mvpc-roll');
-  expect(chat.at(-1)?.flags?.['coc7-mvp-chase']).toMatchObject({ roll: { participantId: 'q', kind: 'skill', name: 'Swim', difficulty: 'regular', bonusDice: 0 } });
+  expect(chat.at(-1)?.flags?.['coc7-mvp-chase']).toMatchObject({ roll: { participantId: 'q', checks: [{ kind: 'skill', name: 'Swim' }], difficulty: 'regular', bonusDice: 0 } });
   const card = {
     id: 'm1',
     flags: { CoC7: { load: { as: 'CoC7Check', actorUuid: 'Actor.q', dicePool: { threshold: 50, difficulty: 1, currentPoolModifier: 0, rolledDice: [{ rolled: true, baseDie: 2, unitDie: 5, bonusDice: [], penaltyDice: [] }] } } } }
@@ -263,7 +263,7 @@ test('players are asked to roll by default, roll their own 1D6, and can push', a
   inv.skillCheck.mockImplementationOnce(() => Promise.resolve());
   await rollFromButton(hardFlag);
   expect(inv.skillCheck).toHaveBeenLastCalledWith('Climb', true, { difficulty: '+', poolModifier: 0 });
-  await expect(rollFromButton({ ...hardFlag, difficulty: 'regular' })).rejects.toThrow(/no longer waiting/);
+  await expect(rollFromButton({ ...hardFlag, difficulty: 'regular' }, 0)).rejects.toThrow(/no longer waiting/);
   expect(chat.at(-1)?.content).toContain('Climb 40% · Hard 20%');
   await handleCheckCard(checkCard('Actor.inv', 40, 5, 5, { difficulty: 2 }));
   const second = chat.at(-1)?.flags?.['coc7-mvp-chase']?.choice;
@@ -343,4 +343,40 @@ test('several chases can be premade, set aside and switched between', async () =
 
   await deleteActiveChase();
   expect(listChases().map(c => c.name)).toEqual(['Docks']);
+});
+
+test('undo puts the chase back a step, and a location can offer two challenges', async () => {
+  const inv = Object.assign(makeActor('inv', { dex: 60, mov: 8, skills: { Athletics: 50, Stealth: 70 } }), {
+    hasPlayerOwner: true,
+    testUserPermission: () => true
+  });
+  actors.set('inv', inv);
+  actors.set('npc', makeActor('npc', { dex: 40, mov: 7, skills: { Athletics: 30 } }));
+  await startNewChase({ quarry: [{ actorId: 'inv' }], pursuers: [{ actorId: 'npc' }], firstCheck: { kind: 'skill', name: 'Athletics' } });
+  // Adding the alternative re-asks the player with both choices.
+  await updateLocation(1, { alt: { kind: 'skill', name: 'Stealth' } });
+  const card = chat.at(-1);
+  expect(card?.content).toContain('Athletics or Stealth check');
+  expect(card?.content).toContain('data-mvpc-roll="1"');
+  expect(card?.flags?.['coc7-mvp-chase']?.roll?.checks).toEqual([
+    { kind: 'skill', name: 'Athletics' },
+    { kind: 'skill', name: 'Stealth' }
+  ]);
+  expect(getChaseView().locations?.[0]?.challenge).toBe('Athletics or Stealth');
+
+  // The player rolls Stealth (70) and fails with 85: the failure is recorded against Stealth.
+  await handleCheckCard(checkCard('Actor.inv', 70, 8, 5));
+  expect(getChaseView().log?.at(-1)).toMatch(/fails Stealth/);
+  // Undo: back to waiting for the roll.
+  const undone = await undoChase();
+  expect(undone.pending).toBeNull();
+  expect(undone.awaiting).toMatchObject({ participant: 'inv' });
+  expect(undone.log?.at(-1)).toMatch(/Keeper undoes: inv fails Stealth/);
+
+  // This time they pass with Athletics: on to Location 2.
+  await handleCheckCard(checkCard('Actor.inv', 50, 1, 0));
+  expect(getChaseView().participants?.find(p => p.name === 'inv')?.location).toBe(2);
+  // The Keeper rolls the NPC's alternative.
+  nextRolls = [];
+  await expect(takeTurn({ useAlt: true, mode: 'pass' })).resolves.toMatchObject({ roll: { check: 'Stealth', passed: true } });
 });

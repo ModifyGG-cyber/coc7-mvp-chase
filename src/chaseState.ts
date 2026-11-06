@@ -28,6 +28,8 @@ export interface ChaseLocation {
   name: string;
   /** The one challenge for this location; null until the Keeper picks it. */
   check: ChaseCheck | null;
+  /** Optional second way through ("Athletics or Stealth"): the character picks which to roll. */
+  alt?: ChaseCheck | null;
   difficulty: Coc7Difficulty;
 }
 
@@ -70,6 +72,8 @@ export interface ChasePending {
 export interface ChaseAwaiting {
   participantId: string;
   check: ChaseCheck;
+  /** The location's other challenge, when the player may pick. */
+  alt?: ChaseCheck | null;
   difficulty: Coc7Difficulty;
   bonusDice: number;
   pushed: boolean;
@@ -93,6 +97,8 @@ export interface ChaseState {
   awaiting: ChaseAwaiting | null;
   /** Players roll their own checks and choose their own failure options. Missing = on. */
   promptPlayers?: boolean;
+  /** Earlier states for Undo, oldest first (each without its own history). */
+  history?: ChaseState[];
   /** Set when the chase is over. */
   outcome: string | null;
   /** Most recent last; trimmed to LOG_LIMIT. */
@@ -261,12 +267,13 @@ export function ensureLocation(state: ChaseState, index: number): ChaseLocation 
 export function setLocation(
   state: ChaseState,
   index: number,
-  update: { name?: string; check?: ChaseCheck | null; difficulty?: Coc7Difficulty }
+  update: { name?: string; check?: ChaseCheck | null; alt?: ChaseCheck | null; difficulty?: Coc7Difficulty }
 ): ChaseLocation {
   if (!Number.isInteger(index) || index < 1) throw new Error('Location index must be 1 or more');
   const loc = ensureLocation(state, index);
   if (update.name !== undefined) loc.name = update.name.trim() || `Location ${String(index)}`;
   if (update.check !== undefined) loc.check = update.check;
+  if (update.alt !== undefined) loc.alt = update.alt;
   if (update.difficulty !== undefined) loc.difficulty = update.difficulty;
   return loc;
 }
@@ -320,10 +327,12 @@ export function requireCurrent(state: ChaseState, participantId?: string): Chase
 export function challengeFor(
   state: ChaseState,
   p: ChaseParticipant,
-  options: { bonusDice?: number; shooting?: boolean; check?: ChaseCheck; difficulty?: Coc7Difficulty } = {}
-): { location: ChaseLocation; check: ChaseCheck; difficulty: Coc7Difficulty; bonusDice: number } {
+  options: { bonusDice?: number; shooting?: boolean; check?: ChaseCheck; useAlt?: boolean; difficulty?: Coc7Difficulty } = {}
+): { location: ChaseLocation; check: ChaseCheck; alt: ChaseCheck | null; difficulty: Coc7Difficulty; bonusDice: number } {
   const location = ensureLocation(state, p.location);
-  const check = options.check ?? location.check;
+  const check = options.check ?? (options.useAlt && location.alt ? location.alt : location.check);
+  // The other way through, offered to the player when the Keeper didn't pick a check for this turn.
+  const alt = options.check || options.useAlt ? null : (location.alt ?? null);
   if (!check) {
     throw new Error(`${locationLabel(state, p.location)} has no challenge yet. Pick one (for example Athletics, Dodge, or plain DEX) first.`);
   }
@@ -333,6 +342,7 @@ export function challengeFor(
   return {
     location,
     check,
+    alt,
     difficulty: options.difficulty ?? location.difficulty,
     bonusDice: Math.max(-MAX_POOL, Math.min(MAX_POOL, pool))
   };
@@ -544,6 +554,43 @@ export function stepLocation(state: ChaseState, id: string, delta: 1 | -1): Chas
   ensureLocation(state, to);
   log(state, `Keeper moves ${p.name} ${delta > 0 ? 'forward' : 'back'} to ${locationLabel(state, to)}.`);
   return p;
+}
+
+const HISTORY_LIMIT = 10;
+
+/** Remembers the chase as it is now, so the next change can be undone. */
+export function pushHistory(state: ChaseState): void {
+  const { history = [], ...rest } = state;
+  const snapshot = JSON.parse(JSON.stringify(rest)) as ChaseState;
+  state.history = [...history, snapshot].slice(-HISTORY_LIMIT);
+}
+
+/** What the last undoable change did, from the log lines it added. */
+export function lastStep(state: ChaseState): string {
+  const previous = state.history?.at(-1);
+  if (!previous) return '';
+  const added = state.log.length >= previous.log.length ? state.log.slice(previous.log.length) : [];
+  const lines = added.filter(l => !/^Round \d+ begins/.test(l));
+  return (lines.length ? lines : added).join(' ') || (state.log.at(-1) ?? '');
+}
+
+/** Puts the chase back to how it was before the last change. Returns what was undone. */
+export function undoLast(state: ChaseState): { restored: ChaseState; undone: string } {
+  const history = state.history ?? [];
+  const previous = history.at(-1);
+  if (!previous) throw new Error('There is nothing to undo.');
+  const undone = lastStep(state) || 'the last change';
+  const restored: ChaseState = { ...previous, history: history.slice(0, -1) };
+  log(restored, `Keeper undoes: ${undone}`);
+  return { restored, undone };
+}
+
+/** "Athletics or Stealth", with difficulty. */
+export function challengeLabel(loc: { check: ChaseCheck | null; alt?: ChaseCheck | null; difficulty: Coc7Difficulty }): string | null {
+  if (!loc.check) return null;
+  const main = checkLabel(loc.check, loc.difficulty);
+  if (!loc.alt) return main;
+  return `${main} or ${loc.alt.kind === 'skill' ? loc.alt.name : loc.alt.name.toUpperCase()}`;
 }
 
 /** Ends the chase now with the Keeper's own outcome. */

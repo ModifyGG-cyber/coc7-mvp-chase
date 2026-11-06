@@ -18,6 +18,7 @@ import {
   resolveFailure,
   restartChase,
   setAsideChase,
+  undoChase,
   startNewChase,
   switchChase,
   type SavedChase,
@@ -26,6 +27,8 @@ import {
 } from './ChaseService';
 import {
   adjustParticipant,
+  challengeLabel,
+  lastStep,
   checkLabel,
   currentParticipant,
   endChase,
@@ -189,9 +192,11 @@ function trackerClass(): AppV2Class {
           const use = parseChallenge(value('useInstead'));
           const bonus = parseInt(value('bonusDice') || '0', 10);
           const weaponId = value('weapon');
+          const useAlt = target.dataset['alt'] === '1';
           return this.run(() =>
             takeTurn({
               mode: action,
+              ...(useAlt ? { useAlt } : {}),
               bonusDice: bonus,
               shooting: checked('shooting'),
               ...(checked('shooting') && weaponId ? { weaponId } : {}),
@@ -261,6 +266,8 @@ function trackerClass(): AppV2Class {
         }
         case 'new-other':
           return this.run(() => setAsideChase());
+        case 'undo':
+          return this.run(() => undoChase());
         case 'restart': {
           const dialog = g().foundry.applications.api.DialogV2;
           const ok = dialog
@@ -292,6 +299,7 @@ function trackerClass(): AppV2Class {
         const kind = input.dataset['field'];
         if (kind === 'name') return this.run(() => updateLocation(index, { name: input.value }));
         if (kind === 'check') return this.run(() => updateLocation(index, { check: parseChallenge(input.value) }));
+        if (kind === 'alt') return this.run(() => updateLocation(index, { alt: parseChallenge(input.value) }));
         if (kind === 'difficulty') return this.run(() => updateLocation(index, { difficulty: input.value as Coc7Difficulty }));
       }
       if (input.dataset['field'] === 'chasePick') {
@@ -301,10 +309,15 @@ function trackerClass(): AppV2Class {
       }
       if (input.dataset['field'] === 'promptPlayers') {
         const on = (input as HTMLInputElement).checked;
-        return this.run(() => mutateChase(state => {
-          state.promptPlayers = on;
-          return undefined;
-        }));
+        return this.run(() =>
+          mutateChase(
+            state => {
+              state.promptPlayers = on;
+              return undefined;
+            },
+            { undoable: false }
+          )
+        );
       }
       const pid = input.closest<HTMLElement>('[data-pid]')?.dataset['pid'];
       if (pid && input.dataset['field'] === 'mvp') {
@@ -381,6 +394,10 @@ const STYLE = `<style>
 .mvpc-chase .mvpc-step button{padding:0 4px;line-height:20px;min-width:0}
 .mvpc-chase .mvpc-picker{border-bottom:1px solid var(--color-border-light-2,#7a7971);padding-bottom:6px}
 .mvpc-chase .mvpc-picker select{width:auto;max-width:22em}
+.mvpc-chase .mvpc-pair{display:flex;gap:4px;align-items:center}
+.mvpc-chase .mvpc-pair input{min-width:0;width:7.5em;flex:0 1 auto}
+.mvpc-chase .mvpc-locs input[data-field=name]{width:9em}
+.mvpc-chase .mvpc-locs td:last-child{font-size:.9em}
 .mvpc-chase .mvpc-pill{font-size:.8em;padding:0 5px;border-radius:8px;border:1px solid currentColor;opacity:.85}
 </style>`;
 
@@ -488,12 +505,12 @@ export function renderTracker(
     .map(l =>
       isGM
         ? `<tr><td>${String(l.index)}</td><td><input type="text" value="${esc(l.name)}" data-loc="${String(l.index)}" data-field="name"></td>
-          <td><input type="text" list="mvpc-chase-checks" placeholder="e.g. Athletics or DEX" value="${esc(challengeText(l.check))}" data-loc="${String(l.index)}" data-field="check"></td>
+          <td><div class="mvpc-pair"><input type="text" list="mvpc-chase-checks" placeholder="e.g. Athletics" value="${esc(challengeText(l.check))}" data-loc="${String(l.index)}" data-field="check"><span>or</span><input type="text" list="mvpc-chase-checks" placeholder="(optional)" title="A second way through: the player picks which to roll" value="${esc(challengeText(l.alt ?? null))}" data-loc="${String(l.index)}" data-field="alt"></div></td>
           <td><select data-loc="${String(l.index)}" data-field="difficulty">${options(DIFFICULTIES, l.difficulty)}</select></td><td>${occupants(l.index)}</td></tr>`
-        : `<tr><td>${String(l.index)}</td><td>${esc(l.name)}</td><td>${l.check ? esc(checkLabel(l.check, l.difficulty)) : '—'}</td><td></td><td>${occupants(l.index)}</td></tr>`
+        : `<tr><td>${String(l.index)}</td><td>${esc(l.name)}</td><td>${esc(challengeLabel(l) ?? '—')}</td><td></td><td>${occupants(l.index)}</td></tr>`
     )
     .join('');
-  parts.push(`<h3>Locations</h3><table><thead><tr><th>#</th><th>Name</th><th>Challenge</th><th>Difficulty</th><th>Here now</th></tr></thead><tbody>${locRows}</tbody></table>`);
+  parts.push(`<h3>Locations</h3><table class="mvpc-locs"><thead><tr><th>#</th><th>Name</th><th>Challenge</th><th>Difficulty</th><th>Here now</th></tr></thead><tbody>${locRows}</tbody></table>`);
   if (isGM && !state.outcome) {
     parts.push(`<div class="mvpc-row"><button type="button" data-chase="add-location"><i class="fa-solid fa-plus"></i> Add location</button><span class="mvpc-hint">New locations also appear by themselves when someone reaches them.</span></div>`);
   }
@@ -514,14 +531,17 @@ export function renderTracker(
       }
     } else if (state.awaiting) {
       const aw = state.awaiting;
-      turn += `<div class="mvpc-row">Waiting for ${esc(name(aw.participantId))} to ${aw.pushed ? 'push' : 'roll'} ${esc(checkLabel(aw.check, aw.difficulty))}${aw.bonusDice ? ` (${aw.bonusDice > 0 ? '+' : ''}${String(aw.bonusDice)} dice)` : ''} from the button in chat…</div>`;
+      turn += `<div class="mvpc-row">Waiting for ${esc(name(aw.participantId))} to ${aw.pushed ? 'push' : 'roll'} ${esc([aw.check, ...(aw.alt ? [aw.alt] : [])].map(c => checkLabel(c, aw.difficulty)).join(' or '))}${aw.bonusDice ? ` (${aw.bonusDice > 0 ? '+' : ''}${String(aw.bonusDice)} dice)` : ''} from the button in chat…</div>`;
       if (isGM) {
         turn += `${aw.pushed ? '' : rollOptions(weapons, true)}
           <div class="mvpc-row mvpc-actions"><button type="button" data-chase="request" title="Post the roll button again${aw.pushed ? '' : ' with these dice and check'}"><i class="fa-solid fa-comment-dots"></i> Ask again</button><button type="button" data-chase="roll">Roll it for them</button><button type="button" data-chase="pass">Passed</button><button type="button" data-chase="fail">Failed</button>${aw.pushed ? '' : '<button type="button" data-chase="skip" title="Does something else this turn">Skip</button>'}</div>`;
       }
     } else if (isGM) {
       const ask = `<button type="button" data-chase="request" title="Post a roll button for the player"><i class="fa-solid fa-comment-dots"></i> Ask player</button>`;
-      const roll = `<button type="button" data-chase="roll"><i class="fa-solid fa-dice-d20"></i> ${playerOwned(current.id) ? 'Roll for them' : 'Roll'}</button>`;
+      const verb = playerOwned(current.id) ? 'Roll for them' : 'Roll';
+      const roll = loc?.alt
+        ? `<button type="button" data-chase="roll"><i class="fa-solid fa-dice-d20"></i> ${verb}: ${esc(challengeText(loc.check))}</button><button type="button" data-chase="roll" data-alt="1"><i class="fa-solid fa-dice-d20"></i> ${verb}: ${esc(challengeText(loc.alt))}</button>`
+        : `<button type="button" data-chase="roll"><i class="fa-solid fa-dice-d20"></i> ${verb}</button>`;
       turn += `${rollOptions(weapons, true)}
         <div class="mvpc-row mvpc-actions">${playerOwned(current.id) ? ask + roll : roll}
         <button type="button" data-chase="pass">Passed</button><button type="button" data-chase="fail">Failed</button>
@@ -542,6 +562,11 @@ export function renderTracker(
         .map(l => `<li>${esc(l)}</li>`)
         .join('')}</ol></details>`
     );
+  }
+
+  if (isGM && state.history?.length) {
+    const last = lastStep(state);
+    parts.push(`<div class="mvpc-row"><button type="button" data-chase="undo" title="Undo: ${esc(last)}"><i class="fa-solid fa-arrow-rotate-left"></i> Undo last step</button><span class="mvpc-hint">${esc(last)}</span></div>`);
   }
 
   if (isGM) {

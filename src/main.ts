@@ -33,6 +33,7 @@ import {
   type TakeTurnInput
 } from './ChaseService';
 import { openChaseTracker, refreshChaseTracker } from './ChaseTracker';
+import { refreshStrip, setStripSource } from './ChaseStrip';
 import {
   adjustParticipant,
   endChase,
@@ -87,26 +88,30 @@ interface ChoiceFlag {
 /** The roll button on a chase roll request: only the character's owners and the Keeper see it. */
 function wireRollCard(message: { flags?: Record<string, Record<string, unknown> | undefined> }, html: HTMLElement): void {
   const flag = message.flags?.[CHASE_MODULE_ID]?.['roll'] as RollFlag | undefined;
-  const button = html.querySelector<HTMLButtonElement>('[data-mvpc-roll]');
-  if (!flag || !button) return;
+  const buttons = Array.from(html.querySelectorAll<HTMLButtonElement>('[data-mvpc-roll]'));
+  if (!flag || !buttons.length) return;
   const actor = g().fromUuidSync?.(flag.actorUuid) ?? null;
-  if (!g().game.user?.isGM && actor?.isOwner !== true) {
-    button.style.display = 'none';
-    return;
-  }
-  if (!rollButtonLive(flag)) {
-    button.disabled = true;
-    button.title = 'This roll is no longer waiting';
-    return;
-  }
-  button.addEventListener('click', event => {
-    event.preventDefault();
-    button.disabled = true;
-    void rollFromButton(flag).catch((error: unknown) => {
-      g().ui.notifications?.warn(error instanceof Error ? error.message : String(error));
-      button.disabled = false;
+  const mine = Boolean(g().game.user?.isGM) || actor?.isOwner === true;
+  for (const button of buttons) {
+    const index = parseInt(button.dataset['mvpcRoll'] ?? '0', 10) || 0;
+    if (!mine) {
+      button.style.display = 'none';
+      continue;
+    }
+    if (!rollButtonLive(flag, index)) {
+      button.disabled = true;
+      button.title = 'This roll is no longer waiting';
+      continue;
+    }
+    button.addEventListener('click', event => {
+      event.preventDefault();
+      buttons.forEach(b => (b.disabled = true));
+      void rollFromButton(flag, index).catch((error: unknown) => {
+        g().ui.notifications?.warn(error instanceof Error ? error.message : String(error));
+        buttons.forEach(b => (b.disabled = false));
+      });
     });
-  });
+  }
 }
 
 /** The buttons on a player's failure card: roll their own 1D6, spend Luck or push. */
@@ -225,6 +230,7 @@ g().Hooks.once('init', () => {
     default: null,
     onChange: (): void => {
       refreshChaseTracker();
+      if (isCoc7()) refreshStrip(loadChase());
     }
   });
 
@@ -289,6 +295,11 @@ g().Hooks.once('init', () => {
 });
 
 g().Hooks.once('ready', () => {
+  if (isCoc7()) {
+    setStripSource(loadChase);
+    refreshStrip(loadChase());
+  }
+
   g().game.socket?.on(SOCKET, (data: unknown) => {
     const message = data as { type?: string; choice?: PlayerChoice } | null;
     if (message?.type !== 'choice' || !message.choice || !isActingGM()) return;

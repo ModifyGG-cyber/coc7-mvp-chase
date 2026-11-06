@@ -2,7 +2,7 @@
   "id": "coc7-mvp-chase",
   "title": "MvP Chase (Call of Cthulhu 7e)",
   "description": "Run chases with the Keeper Companion's optional Movement Point (MvP) rules: a Keeper tracker window, automatic turn order, 1D6 MvP loss, Luck, pushing, caught and escaped.",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "authors": [{ "name": "ModifyGG" }],
   "compatibility": { "minimum": "13", "verified": "14" },
   "relationships": { "systems": [{ "id": "CoC7", "type": "system", "compatibility": { "minimum": "8.0" } }] },

@@ -28,6 +28,9 @@ import {
   requireCurrent,
   resetChase,
   startingMvp,
+  challengeLabel,
+  pushHistory,
+  undoLast,
   setLocation,
   startChase,
   takeLoss,
@@ -251,31 +254,36 @@ function playerRolls(state: ChaseState, p: ChaseParticipant): boolean {
 async function requestRoll(
   state: ChaseState,
   p: ChaseParticipant,
-  challenge: { check: ChaseCheck; difficulty: Coc7Difficulty; bonusDice: number },
+  challenge: { check: ChaseCheck; alt?: ChaseCheck | null; difficulty: Coc7Difficulty; bonusDice: number },
   pushed: boolean
 ): Promise<void> {
-  state.awaiting = { participantId: p.id, check: challenge.check, difficulty: challenge.difficulty, bonusDice: challenge.bonusDice, pushed };
+  const alt = pushed ? null : (challenge.alt ?? null);
+  state.awaiting = { participantId: p.id, check: challenge.check, alt, difficulty: challenge.difficulty, bonusDice: challenge.bonusDice, pushed };
   await saveChase(state);
-  const label = checkLabel(challenge.check, challenge.difficulty);
-  const what = pushed ? `Pushed ${escapeHtml(label)} roll` : `${escapeHtml(label)} check`;
+  const checks = alt ? [challenge.check, alt] : [challenge.check];
+  const labels = checks.map(c => checkLabel(c, challenge.difficulty));
+  const what = pushed ? `Pushed ${escapeHtml(labels[0] ?? '')} roll` : `${escapeHtml(labels.join(' or '))} check`;
   const where = `Location ${String(p.location)}${locationLabel(state, p.location) !== `Location ${String(p.location)}` ? ` (${escapeHtml(locationLabel(state, p.location))})` : ''}`;
-  let value = '';
+  let values = '';
   try {
-    value = `<p>${escapeHtml(valueText(actorOf(p), challenge, p))}</p>`;
+    const actor = actorOf(p);
+    values = checks.map(c => `<p>${escapeHtml(valueText(actor, { ...challenge, check: c }, p))}</p>`).join('');
   } catch {
     // the value is a courtesy; the roll still works without it
   }
+  const buttons = checks
+    .map((_c, i) => `<button type="button" data-mvpc-roll="${String(i)}"><i class="fa-solid fa-dice-d20"></i> Roll ${escapeHtml(labels[i] ?? '')}</button>`)
+    .join('');
   await post(
     state,
-    `<p>${what} for <b>${escapeHtml(p.name)}</b> at ${where}${pushed ? '. Failing a pushed roll means out of the chase' : ''}:</p>${value}<div class="mvpc-choices"><button type="button" data-mvpc-roll="1"><i class="fa-solid fa-dice-d20"></i> Roll ${escapeHtml(label)}</button></div>`,
+    `<p>${what} for <b>${escapeHtml(p.name)}</b> at ${where}${pushed ? '. Failing a pushed roll means out of the chase' : alt ? '. Pick one' : ''}:</p>${values}<div class="mvpc-choices">${buttons}</div>`,
     {
       flags: {
         roll: {
           chaseId: state.id,
           participantId: p.id,
           actorUuid: p.actorUuid,
-          kind: challenge.check.kind,
-          name: challenge.check.name,
+          checks: checks.map(c => ({ kind: c.kind, name: c.name })),
           difficulty: challenge.difficulty,
           bonusDice: challenge.bonusDice
         }
@@ -363,7 +371,7 @@ export function viewOf(state: ChaseState | null): Coc7ChaseView {
       dex: p.dex,
       nextPenaltyDice: p.nextPenaltyDice
     })),
-    locations: state.locations.map(l => ({ index: l.index, name: l.name, challenge: l.check ? checkLabel(l.check, l.difficulty) : null })),
+    locations: state.locations.map(l => ({ index: l.index, name: l.name, challenge: challengeLabel(l) })),
     order: state.order.slice(state.turn).map(name),
     log: state.log.slice(-12)
   };
@@ -415,6 +423,7 @@ export async function startNewChase(input: {
 export async function beginChase(headStart: boolean): Promise<Coc7ChaseView> {
   requireGM();
   const state = requireChase();
+  pushHistory(state);
   startChase(state, { headStart });
   await saveChase(state);
   await post(state, `<p>The chase begins in <b>${escapeHtml(locationLabel(state, 1))}</b>.${headStart ? ' The quarry has a head start: pursuers take a penalty die on their first challenge.' : ''}</p>${standings(state)}${nextUp(state)}`);
@@ -432,18 +441,22 @@ export async function addToChase(ref: Coc7ChaseActorRef, side: ChaseSide): Promi
   return viewOf(state);
 }
 
-export async function updateLocation(index: number, update: { name?: string; check?: Coc7ChaseCheckRef | null; difficulty?: Coc7Difficulty }): Promise<Coc7ChaseView> {
+export async function updateLocation(
+  index: number,
+  update: { name?: string; check?: Coc7ChaseCheckRef | null; alt?: Coc7ChaseCheckRef | null; difficulty?: Coc7Difficulty }
+): Promise<Coc7ChaseView> {
   requireGM();
   const state = requireChase();
   const difficulty = checkDifficulty(update.difficulty);
   setLocation(state, index, {
     ...(update.name !== undefined ? { name: update.name } : {}),
     ...(update.check !== undefined ? { check: update.check ? checkFromRef(update.check) : null } : {}),
+    ...(update.alt !== undefined ? { alt: update.alt ? checkFromRef(update.alt) : null } : {}),
     ...(difficulty ? { difficulty } : {})
   });
   // The challenge changed under a roll already asked for: ask again with the new one.
   const asked = state.awaiting;
-  const changed = update.check !== undefined || difficulty !== undefined;
+  const changed = update.check !== undefined || update.alt !== undefined || difficulty !== undefined;
   if (changed && asked && !asked.pushed && state.participants.find(p => p.id === asked.participantId)?.location === index) state.awaiting = null;
   await saveChase(state);
   await autoPrompt(state);
@@ -451,9 +464,10 @@ export async function updateLocation(index: number, update: { name?: string; che
 }
 
 /** Runs any state change and saves it, for the simple Keeper actions. */
-export async function mutateChase(change: (state: ChaseState) => string | undefined): Promise<Coc7ChaseView> {
+export async function mutateChase(change: (state: ChaseState) => string | undefined, options: { undoable?: boolean } = {}): Promise<Coc7ChaseView> {
   requireGM();
   const state = requireChase();
+  if (options.undoable !== false) pushHistory(state);
   const before = state.outcome;
   const note = change(state);
   await saveChase(state);
@@ -469,6 +483,7 @@ export async function mutateChase(change: (state: ChaseState) => string | undefi
 export async function restartChase(): Promise<Coc7ChaseView> {
   requireGM();
   const state = requireChase();
+  pushHistory(state);
   resetChase(state, p => {
     try {
       const actor = actorOf(p);
@@ -605,17 +620,22 @@ export interface RollFlag {
   chaseId: string;
   participantId: string;
   actorUuid: string;
-  kind: ChaseCheck['kind'];
-  name: string;
+  /** The check each button rolls, by button index. */
+  checks: { kind: ChaseCheck['kind']; name: string }[];
   difficulty: Coc7Difficulty;
   bonusDice: number;
 }
 
+const sameCheck = (a: { kind: string; name: string } | null | undefined, b: { kind: string; name: string } | null | undefined): boolean =>
+  Boolean(a && b && a.kind === b.kind && a.name === b.name);
+
 /** True while this roll button is the one the chase is waiting for. */
-export function rollButtonLive(flag: RollFlag): boolean {
+export function rollButtonLive(flag: RollFlag, index = 0): boolean {
   const state = loadChase();
   const aw = state?.awaiting;
-  return state?.id === flag.chaseId && aw?.participantId === flag.participantId && aw.check.kind === flag.kind && aw.check.name === flag.name && aw.difficulty === flag.difficulty && aw.bonusDice === flag.bonusDice;
+  const wanted = flag.checks[index];
+  if (!aw || !Array.isArray(flag.checks) || state.id !== flag.chaseId || aw.participantId !== flag.participantId) return false;
+  return (sameCheck(wanted, aw.check) || sameCheck(wanted, aw.alt)) && aw.difficulty === flag.difficulty && aw.bonusDice === flag.bonusDice;
 }
 
 /**
@@ -623,21 +643,23 @@ export function rollButtonLive(flag: RollFlag): boolean {
  * normal check card is posted and the Keeper's client resolves the turn from it. Unlike a CoC7 link,
  * it never asks which character, and the Keeper clicking it rolls rather than re-posting the request.
  */
-export async function rollFromButton(flag: RollFlag): Promise<void> {
-  if (!rollButtonLive(flag)) throw new Error('This roll is no longer waiting. Use the newest roll button in chat.');
+export async function rollFromButton(flag: RollFlag, index = 0): Promise<void> {
+  if (!rollButtonLive(flag, index)) throw new Error('This roll is no longer waiting. Use the newest roll button in chat.');
+  const check = flag.checks[index];
+  if (!check) throw new Error('This roll button has no check.');
   const lookup = (globalThis as { fromUuidSync?: (uuid: string) => unknown }).fromUuidSync;
   const actor = lookup?.(flag.actorUuid) as (ActorLike & { isOwner?: boolean }) | null | undefined;
   if (!actor) throw new Error('The character for this roll is gone.');
   if (actor.isOwner === false) throw new Error(`Only ${actor.name}'s player or the Keeper can roll this.`);
   const options = { difficulty: DIFFICULTY_CODE[flag.difficulty], poolModifier: flag.bonusDice };
-  if (flag.kind === 'skill') {
-    const skill = findSkill(actor, flag.name);
-    if (!skill) throw new Error(`${actor.name} has no ${flag.name} skill. The Keeper can roll it for them from the chase tracker.`);
+  if (check.kind === 'skill') {
+    const skill = findSkill(actor, check.name);
+    if (!skill) throw new Error(`${actor.name} has no ${check.name} skill. The Keeper can roll it for them from the chase tracker.`);
     await actor.skillCheck(skill.name, true, options);
-  } else if (flag.kind === 'characteristic') {
-    await actor.characteristicCheck(flag.name, true, options);
+  } else if (check.kind === 'characteristic') {
+    await actor.characteristicCheck(check.name, true, options);
   } else {
-    await actor.attributeCheck(flag.name, true, options);
+    await actor.attributeCheck(check.name, true, options);
   }
 }
 
@@ -674,6 +696,8 @@ export interface TakeTurnInput {
   difficulty?: Coc7Difficulty;
   bonusDice?: number;
   shooting?: boolean;
+  /** Roll the location's second challenge ("or ...") instead of its first. */
+  useAlt?: boolean;
   /** With shooting: the ranged weapon (item id) to fire. Its attack card gets the penalty die too. */
   weaponId?: string;
   blind?: boolean;
@@ -763,6 +787,7 @@ export async function takeTurn(input: TakeTurnInput): Promise<Coc7ChaseTurnResul
   if (state.pending) throw new Error(`${getParticipant(state, state.pending.participantId).name} failed and must take the 1D6 loss, spend Luck or push first.`);
   const named = input.participant ? findParticipant(state, input.participant).id : undefined;
   const p = requireCurrent(state, named);
+  if ((input.mode ?? 'roll') !== 'request') pushHistory(state);
   const bonus = input.bonusDice === undefined ? 0 : input.bonusDice;
   if (!Number.isInteger(bonus) || bonus < -2 || bonus > 2) throw new Error('bonusDice must be an integer from -2 to 2');
   const difficulty = checkDifficulty(input.difficulty);
@@ -770,6 +795,7 @@ export async function takeTurn(input: TakeTurnInput): Promise<Coc7ChaseTurnResul
   const challenge = pushedAsk ?? challengeFor(state, p, {
     bonusDice: bonus,
     shooting: input.shooting ?? false,
+    ...(input.useAlt ? { useAlt: true } : {}),
     ...(input.check ? { check: checkFromRef(input.check) } : {}),
     ...(difficulty ? { difficulty } : {})
   });
@@ -830,6 +856,7 @@ export async function resolveFailure(action: 'take-loss' | 'luck' | 'push', fixe
   const pending = state.pending;
   if (!pending) throw new Error('There is no failed challenge waiting.');
   const p = getParticipant(state, pending.participantId);
+  pushHistory(state);
 
   if (action === 'take-loss') {
     let loss: number;
@@ -927,17 +954,48 @@ async function useCheckCard(message: Coc7ChatMessage): Promise<boolean> {
   if (uuid !== p.actorUuid) return false;
   const summary = checkCardSummary(message);
   if (!summary) return false;
+  pushHistory(state);
   state.awaiting = null;
   const difficulty = summary.difficulty;
   await finishRoll(
     state,
     p,
     { total: summary.total, target: targetFor(summary.threshold, difficulty), passed: summary.passed, messageId: message.id },
-    { check: awaiting.check, difficulty, bonusDice: summary.bonusDice },
+    { check: whichCheck(awaiting, load, summary.threshold, p), difficulty, bonusDice: summary.bonusDice },
     awaiting.pushed,
     false
   );
   return true;
+}
+
+/** With two ways through, which one the player rolled: told apart by the value the card rolled against. */
+function whichCheck(awaiting: { check: ChaseCheck; alt?: ChaseCheck | null }, load: Record<string, unknown>, threshold: number, p: ChaseParticipant): ChaseCheck {
+  const alt = awaiting.alt;
+  if (!alt) return awaiting.check;
+  const type = typeof load['type'] === 'string' ? load['type'].toLowerCase() : '';
+  if (type && alt.kind !== awaiting.check.kind) {
+    if (type.startsWith(alt.kind.slice(0, 4))) return alt;
+    if (type.startsWith(awaiting.check.kind.slice(0, 4))) return awaiting.check;
+  }
+  try {
+    const actor = actorOf(p);
+    const main = rawValue(actor, awaiting.check, p);
+    const other = rawValue(actor, alt, p);
+    if (threshold === other && threshold !== main) return alt;
+  } catch {
+    // fall back to the main challenge
+  }
+  return awaiting.check;
+}
+
+/** Undo: puts the chase back to before the last turn step or Keeper change. Chat cards already posted stay. */
+export async function undoChase(): Promise<Coc7ChaseView> {
+  requireGM();
+  const state = requireChase();
+  const { restored, undone } = undoLast(state);
+  await saveChase(restored);
+  await post(restored, `<p>The Keeper undoes: <i>${escapeHtml(undone)}</i></p>${standings(restored)}${nextUp(restored)}`);
+  return viewOf(restored);
 }
 
 export { requireCurrent };
