@@ -39,7 +39,7 @@ To fix a mistake, use the ◀ ▶ arrows by a character's location to move them 
 
 **Undo last step** reverses the last roll, choice or Keeper change (up to 10 steps); chat cards already posted stay.
 
-**Chase strip:** while a chase runs, everyone sees a slim bar above the hotbar with the locations in a row and each character's portrait where they are (gold for quarry, red for pursuers, the one acting glows). Fold it away with ▼, or drag it by its title bar to anywhere on screen (each person's spot is remembered; double-click the title bar to put it back).
+**Chase strip:** while a chase runs (until it ends), everyone sees a slim bar above the hotbar with the locations in a row and each character's portrait where they are (gold for quarry, red for pursuers, the one acting glows). Fold it away with ▼, or drag it by its title bar to anywhere on screen (each person's spot is remembered; double-click the title bar to put it back).
 
 **Saved chases:** pick **＋ New chase…** in the Chase list at the top of the tracker to set the current chase aside and make another, so you can prepare several before a session (name, locations, challenges and characters). Switch between them from the same list; each keeps everything, even mid-chase. The trash button deletes only the chase on the table.
 

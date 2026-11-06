@@ -29,15 +29,14 @@ const STYLE = `<style>
 #${STRIP_ID} .mvpc-s-chip.mvpc-s-now img{box-shadow:0 0 0 2px #fff,0 0 8px 3px #ffd54a}
 #${STRIP_ID} .mvpc-s-chip.mvpc-s-gone img{filter:grayscale(1);opacity:.6}
 #${STRIP_ID} .mvpc-s-mvp{position:absolute;right:-3px;bottom:-3px;background:#111;border:1px solid #999;border-radius:7px;font-size:10px;line-height:12px;padding:0 3px}
-#${STRIP_ID} .mvpc-s-outcome{margin-top:4px;font-weight:bold;color:#ffd54a}
-#${STRIP_ID}.mvpc-s-folded .mvpc-s-row,#${STRIP_ID}.mvpc-s-folded .mvpc-s-outcome{display:none}
+#${STRIP_ID}.mvpc-s-folded .mvpc-s-row{display:none}
 </style>`;
 
 const FALLBACK_IMG = 'icons/svg/mystery-man.svg';
 
-/** The strip's HTML, or '' when no chase is under way. */
+/** The strip's HTML, or '' when no chase is under way (not started yet, or ended). */
 export function renderStrip(state: ChaseState | null, folded = false): string {
-  if (!state || state.round === 0) return '';
+  if (!state || state.round === 0 || state.outcome) return '';
   const current = currentParticipant(state);
   const last = Math.max(1, ...state.locations.map(l => l.index), ...state.participants.map(p => p.location));
   const chip = (id: string): string => {
@@ -66,8 +65,7 @@ export function renderStrip(state: ChaseState | null, folded = false): string {
     );
   }
   const head = `<div class="mvpc-s-head" title="Drag to move; double-click to put it back"><span>🏃 ${esc(state.name)} · Round ${String(state.round)}${current ? ` · ${esc(current.name)}'s turn` : ''}</span><button type="button" data-mvpc-fold title="${folded ? 'Show the chase' : 'Fold away'}">${folded ? '▲' : '▼'}</button></div>`;
-  const outcome = state.outcome ? `<div class="mvpc-s-outcome">${esc(state.outcome)}</div>` : '';
-  return `${STYLE}${head}<div class="mvpc-s-row">${columns.join('')}</div>${outcome}`;
+  return `${STYLE}${head}<div class="mvpc-s-row">${columns.join('')}</div>`;
 }
 
 function folded(): boolean {
