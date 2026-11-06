@@ -99,7 +99,8 @@ function trackerClass(): AppV2Class {
     };
 
     private busy = false;
-    private listening = false;
+    /** The element the listeners are on: Foundry builds a new one when the window is closed and reopened. */
+    private listeningOn: HTMLElement | null = null;
     private logOpen = false;
 
     _renderHTML(): Promise<string> {
@@ -119,8 +120,8 @@ function trackerClass(): AppV2Class {
 
     _replaceHTML(result: string, content: HTMLElement): void {
       content.innerHTML = result;
-      if (!this.listening) {
-        this.listening = true;
+      if (this.listeningOn !== content) {
+        this.listeningOn = content;
         content.addEventListener('click', event => void this.onClick(event));
         content.addEventListener('change', event => void this.onChange(event));
         content.addEventListener(
@@ -138,11 +139,19 @@ function trackerClass(): AppV2Class {
       if (this.busy) return;
       this.busy = true;
       this.element.classList.add('mvpc-busy');
+      // Never leave the tracker locked: a roll waiting on a dialog that was closed elsewhere gives up after 30 s.
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timeout = new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => {
+          reject(new Error('That took too long, so the tracker is unlocked again. Check chat before trying it again.'));
+        }, 30_000);
+      });
       try {
-        await work();
+        await Promise.race([work(), timeout]);
       } catch (error) {
         g().ui.notifications?.error(error instanceof Error ? error.message : String(error));
       } finally {
+        if (timer) clearTimeout(timer);
         this.busy = false;
         this.element.classList.remove('mvpc-busy');
         void this.render();
@@ -534,7 +543,7 @@ export function renderTracker(
       turn += `<div class="mvpc-row">Waiting for ${esc(name(aw.participantId))} to ${aw.pushed ? 'push' : 'roll'} ${esc([aw.check, ...(aw.alt ? [aw.alt] : [])].map(c => checkLabel(c, aw.difficulty)).join(' or '))}${aw.bonusDice ? ` (${aw.bonusDice > 0 ? '+' : ''}${String(aw.bonusDice)} dice)` : ''} from the button in chat…</div>`;
       if (isGM) {
         turn += `${aw.pushed ? '' : rollOptions(weapons, true)}
-          <div class="mvpc-row mvpc-actions"><button type="button" data-chase="request" title="Post the roll button again${aw.pushed ? '' : ' with these dice and check'}"><i class="fa-solid fa-comment-dots"></i> Ask again</button><button type="button" data-chase="roll">Roll it for them</button><button type="button" data-chase="pass">Passed</button><button type="button" data-chase="fail">Failed</button>${aw.pushed ? '' : '<button type="button" data-chase="skip" title="Does something else this turn">Skip</button>'}</div>`;
+          <div class="mvpc-row mvpc-actions"><button type="button" data-chase="request" title="Post the roll button again${aw.pushed ? '' : ' with these dice and check'}"><i class="fa-solid fa-comment-dots"></i> Ask again</button>${aw.alt && !aw.pushed ? `<button type="button" data-chase="roll">Roll ${esc(challengeText(aw.check))} for them</button><button type="button" data-chase="roll" data-alt="1">Roll ${esc(challengeText(aw.alt))} for them</button>` : '<button type="button" data-chase="roll">Roll it for them</button>'}<button type="button" data-chase="pass">Passed</button><button type="button" data-chase="fail">Failed</button>${aw.pushed ? '' : '<button type="button" data-chase="skip" title="Does something else this turn">Skip</button>'}</div>`;
       }
     } else if (isGM) {
       const ask = `<button type="button" data-chase="request" title="Post a roll button for the player"><i class="fa-solid fa-comment-dots"></i> Ask player</button>`;
