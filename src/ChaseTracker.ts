@@ -144,6 +144,12 @@ function trackerClass(): AppV2Class {
               await addToChase({ tokenId: token.document?.id ?? token.id, ...(sceneId ? { sceneId } : {}) }, action === 'add-quarry' ? 'quarry' : 'pursuer');
             }
           });
+        case 'add-location':
+          return this.run(() => {
+            const state = loadChase();
+            const next = Math.max(0, ...(state?.locations.map(l => l.index) ?? [])) + 1;
+            return updateLocation(next, {});
+          });
         case 'start':
           return this.run(() => beginChase(checked('headStart')));
         case 'roll':
@@ -349,8 +355,7 @@ export function renderTracker(state: ChaseState | null, isGM: boolean): string {
   }
 
   // Locations
-  const furthest = Math.max(1, ...state.participants.map(p => p.location));
-  const locs = state.locations.filter(l => l.index <= furthest + 1);
+  const locs = state.locations;
   const occupants = (index: number): string =>
     state.participants
       .filter(p => p.location === index && p.status === 'active')
@@ -366,6 +371,9 @@ export function renderTracker(state: ChaseState | null, isGM: boolean): string {
     )
     .join('');
   parts.push(`<h3>Locations</h3><table><thead><tr><th>#</th><th>Name</th><th>Challenge</th><th>Difficulty</th><th>Here now</th></tr></thead><tbody>${locRows}</tbody></table>`);
+  if (isGM && !state.outcome) {
+    parts.push(`<div class="mvpc-row"><button type="button" data-chase="add-location"><i class="fa-solid fa-plus"></i> Add location</button><span class="mvpc-hint">New locations also appear by themselves when someone reaches them.</span></div>`);
+  }
 
   // Turn
   if (state.round > 0 && !state.outcome && current) {
