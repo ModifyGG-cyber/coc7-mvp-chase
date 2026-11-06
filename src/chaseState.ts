@@ -512,6 +512,40 @@ export function adjustParticipant(
   return p;
 }
 
+/**
+ * Puts the chase back to its start: everyone in Location 1 with fresh MvP, nobody caught or out,
+ * back in setup so the Keeper can press Start again. Participants and locations are kept.
+ */
+export function resetChase(state: ChaseState, startMvp: (p: ChaseParticipant) => number): void {
+  for (const p of state.participants) {
+    p.mvp = Math.max(0, Math.floor(startMvp(p)));
+    p.location = 1;
+    p.status = p.mvp > 0 ? 'active' : p.side === 'quarry' ? 'caught' : 'out';
+    p.nextPenaltyDice = 0;
+  }
+  state.round = 0;
+  state.order = [];
+  state.turn = 0;
+  state.pending = null;
+  state.awaiting = null;
+  state.outcome = null;
+  state.log = [];
+  log(state, 'The Keeper reset the chase: everyone is back in Location 1 with full MvP.');
+}
+
+/** Moves a character one location back or forward to fix a mistake. Their turn and MvP don't change. */
+export function stepLocation(state: ChaseState, id: string, delta: 1 | -1): ChaseParticipant {
+  const p = getParticipant(state, id);
+  const to = p.location + delta;
+  if (to < 1) throw new Error(`${p.name} is already in Location 1.`);
+  // A roll already asked for was for the old location.
+  if (state.awaiting?.participantId === p.id) state.awaiting = null;
+  p.location = to;
+  ensureLocation(state, to);
+  log(state, `Keeper moves ${p.name} ${delta > 0 ? 'forward' : 'back'} to ${locationLabel(state, to)}.`);
+  return p;
+}
+
 /** Ends the chase now with the Keeper's own outcome. */
 export function endChase(state: ChaseState, outcome?: string): void {
   state.pending = null;

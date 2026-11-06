@@ -13,6 +13,7 @@ import {
   loadChase,
   mutateChase,
   resolveFailure,
+  restartChase,
   startNewChase,
   takeTurn,
   updateLocation
@@ -27,6 +28,7 @@ import {
   majorWound,
   removeParticipant,
   skipTurn,
+  stepLocation,
   type ChaseCheck,
   type ChaseState
 } from './chaseState';
@@ -46,7 +48,7 @@ interface AppV2Instance {
 type AppV2Class = new (options?: Record<string, unknown>) => AppV2Instance;
 
 interface TrackerGlobals {
-  foundry: { applications: { api: { ApplicationV2: AppV2Class } } };
+  foundry: { applications: { api: { ApplicationV2: AppV2Class; DialogV2?: { confirm(options: Record<string, unknown>): Promise<unknown> } } } };
   game: { user?: { isGM?: boolean } | null; i18n?: unknown };
   canvas?: { scene?: { id: string } | null; tokens?: { controlled: { id: string; document?: { id: string } }[] } };
   ui: { notifications?: { error(msg: string): void; warn(msg: string): void; info(msg: string): void } };
@@ -223,6 +225,23 @@ function trackerClass(): AppV2Class {
           );
         case 'clear':
           return this.run(() => clearChase());
+        case 'restart': {
+          const dialog = g().foundry.applications.api.DialogV2;
+          const ok = dialog
+            ? await dialog.confirm({ window: { title: 'Restart chase' }, content: '<p>Put everyone back in Location 1 with full MvP? The locations stay as they are.</p>' })
+            : true;
+          if (!ok) return;
+          return this.run(() => restartChase());
+        }
+        case 'loc-back':
+        case 'loc-forward':
+          if (!pid) return;
+          return this.run(() =>
+            mutateChase(state => {
+              stepLocation(state, pid, action === 'loc-forward' ? 1 : -1);
+              return undefined;
+            })
+          );
         default:
           return;
       }
@@ -308,6 +327,8 @@ const STYLE = `<style>
 .mvpc-chase .mvpc-outcome{font-weight:bold;font-size:1.1em;margin:6px 0}
 .mvpc-chase .mvpc-log{max-height:9em;overflow:auto;font-size:.9em;margin:0;padding-left:1.2em}
 .mvpc-chase .mvpc-hint{font-size:.85em;opacity:.8}
+.mvpc-chase .mvpc-step{display:inline-flex;align-items:center;gap:2px;white-space:nowrap}
+.mvpc-chase .mvpc-step button{padding:0 4px;line-height:20px;min-width:0}
 .mvpc-chase .mvpc-pill{font-size:.8em;padding:0 5px;border-radius:8px;border:1px solid currentColor;opacity:.85}
 </style>`;
 
@@ -343,7 +364,9 @@ export function renderTracker(state: ChaseState | null, isGM: boolean, playerOwn
     .map(p => {
       const cls = p.id === current?.id ? 'mvpc-now' : p.status !== 'active' ? 'mvpc-gone' : '';
       const mvp = isGM ? `<input type="number" min="0" value="${String(p.mvp)}" data-field="mvp">` : String(p.mvp);
-      const loc = isGM ? `<input type="number" min="1" value="${String(p.location)}" data-field="location">` : String(p.location);
+      const loc = isGM
+        ? `<span class="mvpc-step"><button type="button" data-chase="loc-back" title="Move back a location"${p.location <= 1 ? ' disabled' : ''}><i class="fa-solid fa-caret-left"></i></button><input type="number" min="1" value="${String(p.location)}" data-field="location"><button type="button" data-chase="loc-forward" title="Move forward a location"><i class="fa-solid fa-caret-right"></i></button></span>`
+        : String(p.location);
       const side = isGM && state.round === 0 ? `<select data-field="side">${options(['quarry', 'pursuer'], p.side)}</select>` : p.side;
       let actions = '';
       if (isGM) {
@@ -435,10 +458,11 @@ export function renderTracker(state: ChaseState | null, isGM: boolean, playerOwn
   }
 
   if (isGM) {
+    const restart = `<button type="button" data-chase="restart" title="Same people and locations; everyone back to Location 1 with full MvP"><i class="fa-solid fa-rotate-left"></i> Restart</button>`;
     parts.push(
       state.outcome
-        ? `<div class="mvpc-row"><button type="button" data-chase="clear"><i class="fa-solid fa-broom"></i> Clear</button></div>`
-        : `<div class="mvpc-row"><input type="text" name="endText" placeholder="Outcome (optional)" style="flex:1"><button type="button" data-chase="end"><i class="fa-solid fa-flag"></i> End chase</button><button type="button" data-chase="clear" title="Throw the chase away"><i class="fa-solid fa-trash"></i></button></div>`
+        ? `<div class="mvpc-row">${restart}<button type="button" data-chase="clear"><i class="fa-solid fa-broom"></i> Clear</button></div>`
+        : `<div class="mvpc-row"><input type="text" name="endText" placeholder="Outcome (optional)" style="flex:1"><button type="button" data-chase="end"><i class="fa-solid fa-flag"></i> End chase</button>${state.round > 0 ? restart : ''}<button type="button" data-chase="clear" title="Throw the chase away"><i class="fa-solid fa-trash"></i></button></div>`
     );
   }
   return parts.join('');

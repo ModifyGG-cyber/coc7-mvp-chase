@@ -26,6 +26,8 @@ import {
   luckSuccess,
   recordRoll,
   requireCurrent,
+  resetChase,
+  startingMvp,
   setLocation,
   startChase,
   takeLoss,
@@ -444,6 +446,25 @@ export async function mutateChase(change: (state: ChaseState) => string | undefi
     await post(state, `<p>${escapeHtml(note)}</p>${ended}${nextUp(state)}`);
   }
   await autoPrompt(state);
+  return viewOf(state);
+}
+
+/** Starts the same chase over: same people and locations, everyone back in Location 1 with full MvP. */
+export async function restartChase(): Promise<Coc7ChaseView> {
+  requireGM();
+  const state = requireChase();
+  resetChase(state, p => {
+    try {
+      const actor = actorOf(p);
+      const mov = num(actor.system.attribs?.['mov']?.value) || p.mov;
+      p.mov = mov;
+      return startingMvp(mov, actor.statuses?.has('criticalWounds') ?? false);
+    } catch {
+      return p.mov;
+    }
+  });
+  await saveChase(state);
+  await post(state, `<p>The chase is reset. Everyone is back in <b>${escapeHtml(locationLabel(state, 1))}</b> with full MvP.</p>`);
   return viewOf(state);
 }
 
