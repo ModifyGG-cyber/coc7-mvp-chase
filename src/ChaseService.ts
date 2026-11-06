@@ -103,6 +103,7 @@ interface ActorLike extends Coc7Actor {
   img?: string;
   hasPlayerOwner?: boolean;
   testUserPermission?(user: unknown, level: string): boolean;
+  weaponCheck?(weapon: { id: string }, fastForward?: boolean): Promise<unknown>;
   system: Coc7Actor['system'] & { attribs?: Record<string, { value?: number | null; max?: number | null }> };
 }
 
@@ -549,8 +550,86 @@ export interface TakeTurnInput {
   difficulty?: Coc7Difficulty;
   bonusDice?: number;
   shooting?: boolean;
+  /** With shooting: the ranged weapon (item id) to fire. Its attack card gets the penalty die too. */
+  weaponId?: string;
   blind?: boolean;
   total?: number;
+}
+
+// ---------- the sheet: skills and weapons ----------
+
+/** Every skill name on the chase's characters, for the challenge suggestions. */
+export function participantSkillNames(state: ChaseState | null): string[] {
+  const names = new Set<string>();
+  for (const p of state?.participants ?? []) {
+    try {
+      for (const item of actorOf(p).items.filter(i => i.type === 'skill')) if (item.name.trim()) names.add(item.name.trim());
+    } catch {
+      // a character whose actor is gone just adds nothing
+    }
+  }
+  return [...names].sort((a, b) => a.localeCompare(b));
+}
+
+interface WeaponItem {
+  id: string;
+  name: string;
+  type: string;
+  system: { properties?: { rngd?: boolean } };
+}
+
+/** The character's ranged weapons, for the Shooting option. */
+export function rangedWeapons(p: ChaseParticipant): { id: string; name: string }[] {
+  try {
+    const items = actorOf(p).items.filter(i => i.type === 'weapon') as unknown as WeaponItem[];
+    return items.filter(i => i.system.properties?.rngd === true).map(i => ({ id: i.id, name: i.name }));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Makes the CoC7 ranged attack with the weapon. Shooting while running gives the attack a penalty die
+ * too, so the attack card is adjusted as it is created (each target's dice slider moves down one).
+ */
+async function fireWeapon(state: ChaseState, p: ChaseParticipant, weaponId: string): Promise<void> {
+  const actor = actorOf(p);
+  if (!actor.weaponCheck) throw new Error('This CoC7 version cannot make weapon attacks from a module.');
+  const weapon = rangedWeapons(p).find(w => w.id === weaponId);
+  if (!weapon) throw new Error(`${p.name} has no ranged weapon with that id.`);
+  const { Hooks } = getCoc7Globals();
+  let hookId = 0;
+  const timer: { id?: ReturnType<typeof setTimeout> } = {};
+  const done = (): void => {
+    Hooks.off('preCreateChatMessage', hookId);
+    if (timer.id) clearTimeout(timer.id);
+  };
+  hookId = Hooks.on('preCreateChatMessage', (...args: unknown[]) => {
+    const message = args[0] as {
+      flags?: { CoC7?: { load?: { as?: string; actorUuid?: string; targets?: { poolModifier?: number | string }[] } } };
+      content?: string;
+      updateSource?(data: Record<string, unknown>): void;
+    };
+    const load = message.flags?.CoC7?.load;
+    if (load?.as !== 'CoC7ChatCombatRanged' || load.actorUuid !== p.actorUuid) return;
+    done();
+    const targets = (load.targets ?? []).map(t => ({ ...t, poolModifier: Math.max(-2, num(t.poolModifier) - 1) }));
+    let i = 0;
+    const content = (message.content ?? '').replace(/(data-set="poolModifier"[^>]*?value=")(-?\d+)(")/g, (_m, a: string, _v: string, c: string) => {
+      const value = targets[i]?.poolModifier ?? 0;
+      i++;
+      return `${a}${String(value)}${c}`;
+    });
+    message.updateSource?.({ 'flags.CoC7.load.targets': targets, content });
+  });
+  timer.id = setTimeout(done, 60_000);
+  try {
+    await actor.weaponCheck({ id: weapon.id }, false);
+  } catch (error) {
+    done();
+    throw error;
+  }
+  await post(state, `<p><b>${escapeHtml(p.name)}</b> shoots ${escapeHtml(weapon.name)} while running: a penalty die on the attack and on the chase check.</p>`);
 }
 
 export async function takeTurn(input: TakeTurnInput): Promise<Coc7ChaseTurnResult> {
@@ -572,6 +651,7 @@ export async function takeTurn(input: TakeTurnInput): Promise<Coc7ChaseTurnResul
   });
   const label = checkLabel(challenge.check, challenge.difficulty);
   const mode = input.mode ?? 'roll';
+  if (input.shooting && input.weaponId && !pushedAsk) await fireWeapon(state, p, input.weaponId);
 
   if (mode === 'request') {
     await requestRoll(state, p, challenge, pushedAsk !== null);

@@ -11,6 +11,8 @@ import {
   escapeHtml,
   isPlayerControlled,
   loadChase,
+  participantSkillNames,
+  rangedWeapons,
   mutateChase,
   resolveFailure,
   restartChase,
@@ -34,7 +36,8 @@ import {
 } from './chaseState';
 
 const CHARACTERISTIC_NAMES = ['STR', 'CON', 'SIZ', 'DEX', 'APP', 'INT', 'POW', 'EDU'];
-const SUGGESTIONS = ['Athletics', 'Dodge', 'Stealth', 'Spot Hidden', 'Drive Auto', 'Ride', 'Pilot', 'Social', 'Navigate', 'Track', ...CHARACTERISTIC_NAMES, 'Luck'];
+/** Used until characters join; then the suggestions are the skills on their own sheets, house skills included. */
+const DEFAULT_SKILLS = ['Climb', 'Jump', 'Swim', 'Dodge', 'Stealth', 'Spot Hidden', 'Drive Auto', 'Ride', 'Pilot', 'Navigate', 'Track', 'Throw', 'Persuade'];
 const DIFFICULTIES: Coc7Difficulty[] = ['regular', 'hard', 'extreme'];
 
 interface AppV2Instance {
@@ -94,7 +97,11 @@ function trackerClass(): AppV2Class {
     _renderHTML(): Promise<string> {
       const state = loadChase();
       const players = new Set((state?.participants ?? []).filter(p => isPlayerControlled(p)).map(p => p.id));
-      return Promise.resolve(renderTracker(state, Boolean(g().game.user?.isGM), id => players.has(id)));
+      const current = state ? currentParticipant(state) : undefined;
+      const weapons = current ? rangedWeapons(current) : [];
+      return Promise.resolve(
+        renderTracker(state, Boolean(g().game.user?.isGM), id => players.has(id), { skills: participantSkillNames(state), weapons })
+      );
     }
 
     _replaceHTML(result: string, content: HTMLElement): void {
@@ -163,11 +170,13 @@ function trackerClass(): AppV2Class {
         case 'fail': {
           const use = parseChallenge(value('useInstead'));
           const bonus = parseInt(value('bonusDice') || '0', 10);
+          const weaponId = value('weapon');
           return this.run(() =>
             takeTurn({
               mode: action,
               bonusDice: bonus,
               shooting: checked('shooting'),
+              ...(checked('shooting') && weaponId ? { weaponId } : {}),
               ...(use ? { check: use } : {})
             })
           );
@@ -342,8 +351,25 @@ function bonusSelect(): string {
   return `<label>Bonus <select name="bonusDice">${options(['2', '1', '0', '-1', '-2'], '0', { '2': '+2 bonus', '1': '+1 bonus', '0': 'none', '-1': '1 penalty', '-2': '2 penalty' })}</select></label>`;
 }
 
-export function renderTracker(state: ChaseState | null, isGM: boolean, playerOwned: (id: string) => boolean = () => false): string {
-  const datalist = `<datalist id="mvpc-chase-checks">${SUGGESTIONS.map(s => `<option value="${esc(s)}"></option>`).join('')}</datalist>`;
+function shootingControls(weapons: { id: string; name: string }[]): string {
+  const pick = weapons.length
+    ? `<select name="weapon" title="Weapon to fire: its attack card gets the penalty die too">${weapons.length > 1 ? '<option value="">no attack card</option>' : ''}${weapons
+        .map((w, i) => `<option value="${esc(w.id)}"${i === 0 && weapons.length === 1 ? ' selected' : ''}>${esc(w.name)}</option>`)
+        .join('')}</select>`
+    : '';
+  return `<label title="Also making a ranged attack: penalty die on the chase check and on the attack"><input type="checkbox" name="shooting"> Shooting</label>${pick}`;
+}
+
+export function renderTracker(
+  state: ChaseState | null,
+  isGM: boolean,
+  playerOwned: (id: string) => boolean = () => false,
+  sheet: { skills?: string[]; weapons?: { id: string; name: string }[] } = {}
+): string {
+  const skills = sheet.skills?.length ? sheet.skills : DEFAULT_SKILLS;
+  const suggestions = [...skills, ...CHARACTERISTIC_NAMES, 'Luck'];
+  const datalist = `<datalist id="mvpc-chase-checks">${suggestions.map(s => `<option value="${esc(s)}"></option>`).join('')}</datalist>`;
+  const weapons = sheet.weapons ?? [];
   if (!state) {
     if (!isGM) return `${STYLE}<p>No chase is running.</p>`;
     return `${STYLE}
@@ -431,7 +457,7 @@ export function renderTracker(state: ChaseState | null, isGM: boolean, playerOwn
       const aw = state.awaiting;
       turn += `<div class="mvpc-row">Waiting for ${esc(name(aw.participantId))} to ${aw.pushed ? 'push' : 'roll'} ${esc(checkLabel(aw.check, aw.difficulty))}${aw.bonusDice ? ` (${aw.bonusDice > 0 ? '+' : ''}${String(aw.bonusDice)} dice)` : ''} from the button in chat…</div>`;
       if (isGM) {
-        turn += `<div class="mvpc-row">${aw.pushed ? '' : `${bonusSelect()}<label title="Also making a ranged attack: penalty die on both rolls"><input type="checkbox" name="shooting"> Shooting</label>`}
+        turn += `<div class="mvpc-row">${aw.pushed ? '' : `${bonusSelect()}${shootingControls(weapons)}`}
           <button type="button" data-chase="request" title="Post the roll button again${aw.pushed ? '' : ' with this bonus'}"><i class="fa-solid fa-comment-dots"></i> Ask again</button></div>
           <div class="mvpc-row"><button type="button" data-chase="roll">Roll it for them</button><button type="button" data-chase="pass">Passed</button><button type="button" data-chase="fail">Failed</button>${aw.pushed ? '' : '<button type="button" data-chase="skip" title="Does something else this turn">Skip</button>'}</div>`;
       }
@@ -439,7 +465,7 @@ export function renderTracker(state: ChaseState | null, isGM: boolean, playerOwn
       const ask = `<button type="button" data-chase="request" title="Post a roll button for the player"><i class="fa-solid fa-comment-dots"></i> Ask player</button>`;
       const roll = `<button type="button" data-chase="roll"><i class="fa-solid fa-dice-d20"></i> ${playerOwned(current.id) ? 'Roll for them' : 'Roll'}</button>`;
       turn += `<div class="mvpc-row">${bonusSelect()}
-        <label title="Also making a ranged attack: penalty die on both rolls"><input type="checkbox" name="shooting"> Shooting</label>
+        ${shootingControls(weapons)}
         <label>Use instead <input type="text" name="useInstead" list="mvpc-chase-checks" placeholder="e.g. DEX" style="width:8em"></label></div>
         <div class="mvpc-row">${playerOwned(current.id) ? ask + roll : roll + ask}
         <button type="button" data-chase="pass">Passed</button><button type="button" data-chase="fail">Failed</button>

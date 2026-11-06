@@ -263,3 +263,47 @@ test('players are asked to roll by default, roll their own 1D6, and can push', a
   const lost = await handlePlayerChoice({ chaseId: second.chaseId, participantId: 'inv', userId: 'player', action: 'take-loss', loss: 3 }, { id: 'player' });
   expect(lost?.participants?.find(p => p.name === 'inv')).toMatchObject({ mvp: 5, location: 3 });
 });
+
+test('shooting fires the chosen weapon with a penalty die on its attack card, and suggestions come from the sheets', async () => {
+  const shooter = makeActor('shooter', { dex: 60, mov: 8, skills: { Athletics: 50, Social: 40 } });
+  const pistol = { id: 'w1', name: '.38 Revolver', type: 'weapon', system: { properties: { rngd: true } } };
+  const knife = { id: 'w2', name: 'Knife', type: 'weapon', system: { properties: { rngd: false } } };
+  const baseFilter = shooter.items.filter;
+  shooter.items = { filter: fn => [...baseFilter(fn), ...[pistol, knife].filter(fn as (i: unknown) => boolean)] };
+  let created: { flags: unknown; content: string } | undefined;
+  Object.assign(shooter, {
+    weaponCheck: jest.fn(() => {
+      const message = {
+        flags: { CoC7: { load: { as: 'CoC7ChatCombatRanged', actorUuid: 'Actor.shooter', targets: [{ poolModifier: 0 }, { poolModifier: -2 }] } } },
+        content: '<input type="range" data-set="poolModifier" min="-2" max="2" value="0" class="slider"><input type="range" data-set="poolModifier" min="-2" max="2" value="-2" class="slider">',
+        updateSource(data: Record<string, unknown>) {
+          created = { flags: data['flags.CoC7.load.targets'], content: data['content'] as string };
+        }
+      };
+      for (const fn of hooks['preCreateChatMessage']?.values() ?? []) fn(message);
+      return Promise.resolve();
+    })
+  });
+  actors.set('shooter', shooter);
+  actors.set('mark', makeActor('mark', { dex: 40, mov: 7 }));
+  await startNewChase({ quarry: [{ actorId: 'mark' }], pursuers: [{ actorId: 'shooter' }], firstCheck: { kind: 'characteristic', name: 'dex' } });
+
+  const { participantSkillNames, rangedWeapons } = await import('../ChaseService');
+  const { loadChase } = await import('../ChaseService');
+  const state = loadChase();
+  expect(participantSkillNames(state)).toEqual(['Athletics', 'Social']);
+  const p = state?.participants.find(x => x.id === 'shooter');
+  if (!p) throw new Error('no shooter');
+  expect(rangedWeapons(p)).toEqual([{ id: 'w1', name: '.38 Revolver' }]);
+
+  nextRolls = [20];
+  await takeTurn({}); // mark
+  nextRolls = [30];
+  const t = await takeTurn({ shooting: true, weaponId: 'w1' });
+  expect(t.roll?.bonusDice).toBe(-1);
+  expect(created?.flags).toEqual([{ poolModifier: -1 }, { poolModifier: -2 }]);
+  expect(created?.content).toContain('value="-1"');
+  expect(created?.content).toContain('value="-2"');
+  expect(chat.some(c => c.content?.includes('shoots .38 Revolver while running'))).toBe(true);
+  expect(hooks['preCreateChatMessage']?.size ?? 0).toBe(0);
+});
