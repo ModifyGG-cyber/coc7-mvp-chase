@@ -39,6 +39,7 @@ import {
   removeParticipant,
   skipTurn,
   stepLocation,
+  removeLocation,
   type ChaseCheck,
   type ChaseState
 } from './chaseState';
@@ -291,6 +292,21 @@ function trackerClass(): AppV2Class {
           if (!ok) return;
           return this.run(() => restartChase());
         }
+        case 'remove-location': {
+          const index = parseInt(target.dataset['loc'] ?? '', 10);
+          if (!index) return;
+          const dialog = g().foundry.applications.api.DialogV2;
+          const ok = dialog
+            ? await dialog.confirm({ window: { title: 'Remove location' }, content: `<p>Remove Location ${String(index)}? The locations after it move down a number. Undo puts it back.</p>` })
+            : true;
+          if (!ok) return;
+          return this.run(() =>
+            mutateChase(state => {
+              removeLocation(state, index);
+              return undefined;
+            })
+          );
+        }
         case 'loc-back':
         case 'loc-forward':
           if (!pid) return;
@@ -407,6 +423,7 @@ const STYLE = `<style>
 .mvpc-chase .mvpc-hint{font-size:.85em;opacity:.8}
 .mvpc-chase .mvpc-step{display:inline-flex;align-items:center;gap:2px;white-space:nowrap}
 .mvpc-chase .mvpc-step button{padding:0 4px;line-height:20px;min-width:0}
+.mvpc-chase .mvpc-icon{padding:0 5px;line-height:20px;min-width:0}
 .mvpc-chase .mvpc-picker{border-bottom:1px solid var(--color-border-light-2,#7a7971);padding-bottom:6px}
 .mvpc-chase .mvpc-picker select{width:auto;max-width:22em}
 .mvpc-chase .mvpc-pair{display:flex;gap:4px;align-items:center}
@@ -430,7 +447,7 @@ function bonusSelect(): string {
 function rollOptions(weapons: { id: string; name: string }[], withCheck: boolean): string {
   const dice = `<span class="mvpc-opt-label">Dice</span><div class="mvpc-opt">${bonusSelect()}<span class="mvpc-sep"></span>${shootingControls(weapons)}</div>`;
   const check = withCheck
-    ? `<span class="mvpc-opt-label">Use instead</span><div class="mvpc-opt"><input type="text" name="useInstead" data-suggest="1" autocomplete="off" placeholder="e.g. Social or DEX" style="width:11em"><span class="mvpc-hint">Blank uses the location's challenge</span></div>`
+    ? `<span class="mvpc-opt-label">Use instead</span><div class="mvpc-opt"><input type="text" name="useInstead" data-suggest="1" autocomplete="off" placeholder="e.g. Dodge or DEX" style="width:11em"><span class="mvpc-hint">Blank uses the location's challenge</span></div>`
     : '';
   return `<div class="mvpc-opts">${dice}${check}</div>`;
 }
@@ -520,12 +537,13 @@ export function renderTracker(
     .map(l =>
       isGM
         ? `<tr><td>${String(l.index)}</td><td><input type="text" value="${esc(l.name)}" data-loc="${String(l.index)}" data-field="name"></td>
-          <td><div class="mvpc-pair"><input type="text" data-suggest="1" autocomplete="off" placeholder="e.g. Athletics" value="${esc(challengeText(l.check))}" data-loc="${String(l.index)}" data-field="check"><span>or</span><input type="text" data-suggest="1" autocomplete="off" placeholder="(optional)" title="A second way through: the player picks which to roll" value="${esc(challengeText(l.alt ?? null))}" data-loc="${String(l.index)}" data-field="alt"></div></td>
-          <td><select data-loc="${String(l.index)}" data-field="difficulty">${options(DIFFICULTIES, l.difficulty)}</select></td><td>${occupants(l.index)}</td></tr>`
+          <td><div class="mvpc-pair"><input type="text" data-suggest="1" autocomplete="off" placeholder="e.g. Climb" value="${esc(challengeText(l.check))}" data-loc="${String(l.index)}" data-field="check"><span>or</span><input type="text" data-suggest="1" autocomplete="off" placeholder="(optional)" title="A second way through: the player picks which to roll" value="${esc(challengeText(l.alt ?? null))}" data-loc="${String(l.index)}" data-field="alt"></div></td>
+          <td><select data-loc="${String(l.index)}" data-field="difficulty">${options(DIFFICULTIES, l.difficulty)}</select></td><td>${occupants(l.index)}</td>
+          <td>${locs.length > 1 && !state.outcome ? `<button type="button" class="mvpc-icon" data-chase="remove-location" data-loc="${String(l.index)}" title="Remove this location"><i class="fa-solid fa-xmark"></i></button>` : ''}</td></tr>`
         : `<tr><td>${String(l.index)}</td><td>${esc(l.name)}</td><td>${esc(challengeLabel(l) ?? '—')}</td><td></td><td>${occupants(l.index)}</td></tr>`
     )
     .join('');
-  parts.push(`<h3>Locations</h3><table class="mvpc-locs"><thead><tr><th>#</th><th>Name</th><th>Challenge</th><th>Difficulty</th><th>Here now</th></tr></thead><tbody>${locRows}</tbody></table>`);
+  parts.push(`<h3>Locations</h3><table class="mvpc-locs"><thead><tr><th>#</th><th>Name</th><th>Challenge</th><th>Difficulty</th><th>Here now</th><th></th></tr></thead><tbody>${locRows}</tbody></table>`);
   if (isGM && !state.outcome) {
     parts.push(`<div class="mvpc-row"><button type="button" data-chase="add-location"><i class="fa-solid fa-plus"></i> Add location</button><span class="mvpc-hint">New locations also appear by themselves when someone reaches them.</span></div>`);
   }

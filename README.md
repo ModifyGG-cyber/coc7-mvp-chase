@@ -6,7 +6,7 @@ A Foundry VTT module that runs chases with the **Keeper Companion's optional "Ne
 
 - Everyone has **MvP equal to MOV**, halved (rounded down) for a major wound.
 - Everyone starts in **Location 1**. Each round the **quarry act first, then the pursuers**, highest DEX first.
-- Each location has **one challenge** (a skill such as Athletics or Dodge, a characteristic such as DEX or CON, or Luck). Locations start at Regular difficulty, and the Keeper can change any location's difficulty.
+- Each location has **one challenge** (a skill such as Climb or Dodge, a characteristic such as DEX or CON, or Luck). Locations start at Regular difficulty, and the Keeper can change any location's difficulty.
 - **Success:** move on to the next location.
 - **Failure:** choose one of three:
   - **lose 1D6 MvP**, and still move on with 1 or more MvP left;
@@ -25,7 +25,7 @@ A Foundry VTT module that runs chases with the **Keeper Companion's optional "Ne
 1. As the Keeper, click the running-man **Chase** button on the token controls.
 2. Name the chase and Location 1, then click **New chase**.
 3. Select tokens, then click **Add selected as quarry** or **Add selected as pursuers**. Tick the head-start box if it applies, then click **Start chase**.
-4. Type a challenge for each location (and optionally a second one in the **or** box, such as `Athletics` or `Stealth`, so the character picks which to roll). Challenges can be skills, characteristics such as `DEX`, or `Luck`. Pick each location's difficulty. Suggestions come from the skills on the chase's own character sheets, so house-ruled skill lists work too; any skill name can be typed.
+4. Type a challenge for each location (and optionally a second one in the **or** box, such as `Climb` or `Stealth`, so the character picks which to roll). Challenges can be skills, characteristics such as `DEX`, or `Luck`. Pick each location's difficulty. Suggestions come from the skills on the chase's own character sheets, so house-ruled skill lists work too; any skill name can be typed. Remove a location with its ✕ button (the ones after it move down a number; you can't remove one where someone is standing).
 5. When it's a player character's turn, the player gets a roll button in chat straight away, and their roll resolves the turn. If they fail, they get buttons in chat to **roll their own 1D6** MvP loss, **spend Luck** or **push** the roll. Untick "Players roll their own checks" to roll everything yourself.
 6. For the Keeper's characters, or to override, click one of these (set **Bonus** first for bonus or penalty dice):
    - **Roll** rolls as the character, using the normal CoC7 check card.
@@ -53,7 +53,7 @@ chase.open();
 await chase.start({ name: 'Cairo bazaar', firstLocation: 'the spice alley',
   firstCheck: { kind: 'characteristic', name: 'dex' },
   quarry: [{ tokenId: 'abc' }], pursuers: [{ tokenId: 'def', skillTier: 'average' }], headStart: true });
-await chase.setLocation({ index: 2, name: 'a high wall', check: { kind: 'skill', name: 'Athletics' }, difficulty: 'hard' });
+await chase.setLocation({ index: 2, name: 'a high wall', check: { kind: 'skill', name: 'Climb' }, difficulty: 'hard' });
 await chase.takeTurn({ mode: 'roll' });        // or 'request', 'pass', 'fail'; bonusDice, shooting
 await chase.resolve('take-loss');              // or 'luck', 'push'
 await chase.act({ action: 'help', participant: 'Helper', ally: 'Fallen' }); // skip, major-wound, adjust, remove, end

@@ -278,6 +278,28 @@ export function setLocation(
   return loc;
 }
 
+/**
+ * Takes a location out of the chase. The ones after it move down a number, and so does anyone
+ * standing in them, so the line stays unbroken. A location where someone still in the chase is
+ * standing can't be removed, and neither can the only one left.
+ */
+export function removeLocation(state: ChaseState, index: number): void {
+  const loc = state.locations.find(l => l.index === index);
+  if (!loc) throw new Error(`There is no Location ${String(index)}`);
+  if (state.locations.length <= 1) throw new Error('A chase needs at least one location');
+  const here = state.participants.filter(p => p.location === index && p.status === 'active');
+  if (here.length) throw new Error(`${here.map(p => p.name).join(', ')} ${here.length > 1 ? 'are' : 'is'} still in ${locationLabel(state, index)}; move them first`);
+  state.locations = state.locations.filter(l => l !== loc);
+  for (const l of state.locations) {
+    if (l.index < index) continue;
+    const plain = l.name === `Location ${String(l.index)}`;
+    l.index -= 1;
+    if (plain) l.name = `Location ${String(l.index)}`;
+  }
+  for (const p of state.participants) if (p.location > index) p.location -= 1;
+  if (state.hardFrom !== null && state.hardFrom > index) state.hardFrom -= 1;
+}
+
 export function currentParticipant(state: ChaseState): ChaseParticipant | null {
   if (state.round === 0 || state.outcome) return null;
   const id = state.order[state.turn];
@@ -334,7 +356,7 @@ export function challengeFor(
   // The other way through, offered to the player when the Keeper didn't pick a check for this turn.
   const alt = options.check || options.useAlt ? null : (location.alt ?? null);
   if (!check) {
-    throw new Error(`${locationLabel(state, p.location)} has no challenge yet. Pick one (for example Athletics, Dodge, or plain DEX) first.`);
+    throw new Error(`${locationLabel(state, p.location)} has no challenge yet. Pick one (for example Climb, Dodge, or plain DEX) first.`);
   }
   let pool = options.bonusDice ?? 0;
   pool -= p.nextPenaltyDice;
