@@ -3,6 +3,7 @@
  * at runtime, so this file only touches Foundry globals when the window is opened.
  */
 
+import { attachSuggestions } from './SuggestBox';
 import type { Coc7ChaseCheckRef, Coc7Difficulty } from './types';
 import {
   addToChase,
@@ -119,9 +120,14 @@ function trackerClass(): AppV2Class {
     }
 
     _replaceHTML(result: string, content: HTMLElement): void {
+      const scroll = content.scrollTop;
       content.innerHTML = result;
+      content.scrollTop = scroll;
       if (this.listeningOn !== content) {
         this.listeningOn = content;
+        attachSuggestions(content, () =>
+          Array.from(content.querySelectorAll<HTMLOptionElement>('#mvpc-chase-checks option')).map(o => o.value)
+        );
         content.addEventListener('click', event => void this.onClick(event));
         content.addEventListener('change', event => void this.onChange(event));
         content.addEventListener(
@@ -375,7 +381,7 @@ export function refreshChaseTracker(): void {
 // ---------- HTML ----------
 
 const STYLE = `<style>
-.mvpc-chase .window-content{padding:8px}
+.mvpc-chase .window-content{padding:8px;max-height:calc(100vh - 120px);overflow-y:auto}
 .mvpc-chase.mvpc-busy .window-content{opacity:.6;pointer-events:none}
 .mvpc-chase h3{margin:6px 0 4px;font-size:1.05em;border-bottom:1px solid var(--color-border-light-2,#7a7971);}
 .mvpc-chase table{width:100%;border-collapse:collapse;margin:0 0 6px}
@@ -424,7 +430,7 @@ function bonusSelect(): string {
 function rollOptions(weapons: { id: string; name: string }[], withCheck: boolean): string {
   const dice = `<span class="mvpc-opt-label">Dice</span><div class="mvpc-opt">${bonusSelect()}<span class="mvpc-sep"></span>${shootingControls(weapons)}</div>`;
   const check = withCheck
-    ? `<span class="mvpc-opt-label">Use instead</span><div class="mvpc-opt"><input type="text" name="useInstead" list="mvpc-chase-checks" placeholder="e.g. Social or DEX" style="width:11em"><span class="mvpc-hint">Blank uses the location's challenge</span></div>`
+    ? `<span class="mvpc-opt-label">Use instead</span><div class="mvpc-opt"><input type="text" name="useInstead" data-suggest="1" autocomplete="off" placeholder="e.g. Social or DEX" style="width:11em"><span class="mvpc-hint">Blank uses the location's challenge</span></div>`
     : '';
   return `<div class="mvpc-opts">${dice}${check}</div>`;
 }
@@ -514,7 +520,7 @@ export function renderTracker(
     .map(l =>
       isGM
         ? `<tr><td>${String(l.index)}</td><td><input type="text" value="${esc(l.name)}" data-loc="${String(l.index)}" data-field="name"></td>
-          <td><div class="mvpc-pair"><input type="text" list="mvpc-chase-checks" placeholder="e.g. Athletics" value="${esc(challengeText(l.check))}" data-loc="${String(l.index)}" data-field="check"><span>or</span><input type="text" list="mvpc-chase-checks" placeholder="(optional)" title="A second way through: the player picks which to roll" value="${esc(challengeText(l.alt ?? null))}" data-loc="${String(l.index)}" data-field="alt"></div></td>
+          <td><div class="mvpc-pair"><input type="text" data-suggest="1" autocomplete="off" placeholder="e.g. Athletics" value="${esc(challengeText(l.check))}" data-loc="${String(l.index)}" data-field="check"><span>or</span><input type="text" data-suggest="1" autocomplete="off" placeholder="(optional)" title="A second way through: the player picks which to roll" value="${esc(challengeText(l.alt ?? null))}" data-loc="${String(l.index)}" data-field="alt"></div></td>
           <td><select data-loc="${String(l.index)}" data-field="difficulty">${options(DIFFICULTIES, l.difficulty)}</select></td><td>${occupants(l.index)}</td></tr>`
         : `<tr><td>${String(l.index)}</td><td>${esc(l.name)}</td><td>${esc(challengeLabel(l) ?? '—')}</td><td></td><td>${occupants(l.index)}</td></tr>`
     )
