@@ -33,3 +33,15 @@ test('the Keeper gets an Add location button and sees every planned location', (
   expect(html).toContain('the docks');
   expect(renderTracker(s, false)).not.toContain('data-chase="add-location"');
 });
+
+test('with two challenges, the Keeper can roll either one for a player who was asked', () => {
+  const s = createChase({ id: 'c' });
+  setLocation(s, 1, { check: { kind: 'skill', name: 'Athletics' }, alt: { kind: 'skill', name: 'Stealth' } });
+  addParticipant(s, { id: 'q', name: 'Edward', actorId: 'q', actorUuid: 'Actor.q', side: 'quarry', dex: 60, mov: 8 });
+  addParticipant(s, { id: 'p', name: 'Thug', actorId: 'p', actorUuid: 'Actor.p', side: 'pursuer', dex: 55, mov: 8 });
+  startChase(s);
+  s.awaiting = { participantId: 'q', check: { kind: 'skill', name: 'Athletics' }, alt: { kind: 'skill', name: 'Stealth' }, difficulty: 'regular', bonusDice: 0, pushed: false };
+  const html = renderTracker(s, true, id => id === 'q');
+  expect(html).toContain('Roll Athletics for them');
+  expect(html).toContain('data-alt="1">Roll Stealth for them');
+});

@@ -11,6 +11,7 @@ import {
   majorWound,
   recordRoll,
   removeParticipant,
+  removeLocation,
   resetChase,
   setLocation,
   skipTurn,
@@ -253,4 +254,25 @@ test('restart keeps people and locations, and the Keeper can step a character ba
   expect(state.locations.find(l => l.index === 2)).toMatchObject({ name: 'the wall', difficulty: 'hard' });
   startChase(state);
   expect(currentParticipant(state)?.id).toBe('q');
+});
+
+test('removing a location closes the gap and moves people beyond it down a number', () => {
+  const state = createChase({ id: 'c' });
+  setLocation(state, 1, { check: DEX });
+  setLocation(state, 2, { check: CLIMB });
+  setLocation(state, 3, { name: 'the canal', check: DODGE });
+  setLocation(state, 4, { check: DEX });
+  addParticipant(state, person('q', 'quarry', 60, 8));
+  addParticipant(state, person('p', 'pursuer', 50, 7));
+  state.participants[0]!.location = 3;
+
+  expect(() => removeLocation(state, 1)).toThrow(/still in Location 1/);
+  removeLocation(state, 2);
+  expect(state.locations.map(l => [l.index, l.name, l.check?.name])).toEqual([
+    [1, 'Location 1', 'dex'],
+    [2, 'the canal', 'Dodge'],
+    [3, 'Location 3', 'dex']
+  ]);
+  expect(state.participants.map(p => p.location)).toEqual([2, 1]);
+  expect(() => removeLocation(state, 9)).toThrow(/no Location 9/);
 });
