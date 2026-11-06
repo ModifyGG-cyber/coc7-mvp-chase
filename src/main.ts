@@ -14,6 +14,7 @@ import type { Coc7ChatMessage } from './coc7';
 import {
   CHASE_MODULE_ID,
   CHASE_SETTING,
+  LIBRARY_SETTING,
   addToChase,
   getChaseView,
   handleCheckCard,
@@ -222,6 +223,17 @@ g().Hooks.once('init', () => {
     config: false,
     type: Object,
     default: null,
+    onChange: (): void => {
+      refreshChaseTracker();
+    }
+  });
+
+  g().game.settings.register(CHASE_MODULE_ID, LIBRARY_SETTING, {
+    name: 'Saved MvP chases',
+    scope: 'world',
+    config: false,
+    type: Object,
+    default: {},
     onChange: (): void => {
       refreshChaseTracker();
     }

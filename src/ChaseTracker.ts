@@ -7,7 +7,8 @@ import type { Coc7ChaseCheckRef, Coc7Difficulty } from './types';
 import {
   addToChase,
   beginChase,
-  clearChase,
+  deleteActiveChase,
+  listChases,
   escapeHtml,
   isPlayerControlled,
   loadChase,
@@ -16,7 +17,10 @@ import {
   mutateChase,
   resolveFailure,
   restartChase,
+  setAsideChase,
   startNewChase,
+  switchChase,
+  type SavedChase,
   takeTurn,
   updateLocation
 } from './ChaseService';
@@ -101,7 +105,12 @@ function trackerClass(): AppV2Class {
       const current = state ? currentParticipant(state) : undefined;
       const weapons = current ? rangedWeapons(current) : [];
       return Promise.resolve(
-        renderTracker(state, Boolean(g().game.user?.isGM), id => players.has(id), { skills: participantSkillNames(state), weapons, logOpen: this.logOpen })
+        renderTracker(state, Boolean(g().game.user?.isGM), id => players.has(id), {
+          skills: participantSkillNames(state),
+          weapons,
+          logOpen: this.logOpen,
+          saved: g().game.user?.isGM ? listChases() : []
+        })
       );
     }
 
@@ -241,8 +250,17 @@ function trackerClass(): AppV2Class {
               return state.outcome ?? undefined;
             })
           );
-        case 'clear':
-          return this.run(() => clearChase());
+        case 'clear': {
+          const state = loadChase();
+          const dialog = g().foundry.applications.api.DialogV2;
+          const ok = dialog
+            ? await dialog.confirm({ window: { title: 'Delete chase' }, content: `<p>Delete "${esc(state?.name ?? 'this chase')}" for good? Saved chases are not affected.</p>` })
+            : true;
+          if (!ok) return;
+          return this.run(() => deleteActiveChase());
+        }
+        case 'new-other':
+          return this.run(() => setAsideChase());
         case 'restart': {
           const dialog = g().foundry.applications.api.DialogV2;
           const ok = dialog
@@ -275,6 +293,11 @@ function trackerClass(): AppV2Class {
         if (kind === 'name') return this.run(() => updateLocation(index, { name: input.value }));
         if (kind === 'check') return this.run(() => updateLocation(index, { check: parseChallenge(input.value) }));
         if (kind === 'difficulty') return this.run(() => updateLocation(index, { difficulty: input.value as Coc7Difficulty }));
+      }
+      if (input.dataset['field'] === 'chasePick') {
+        const id = input.value;
+        if (!id || id === loadChase()?.id) return;
+        return this.run(() => (id === '__new' ? setAsideChase() : switchChase(id)));
       }
       if (input.dataset['field'] === 'promptPlayers') {
         const on = (input as HTMLInputElement).checked;
@@ -356,6 +379,8 @@ const STYLE = `<style>
 .mvpc-chase .mvpc-hint{font-size:.85em;opacity:.8}
 .mvpc-chase .mvpc-step{display:inline-flex;align-items:center;gap:2px;white-space:nowrap}
 .mvpc-chase .mvpc-step button{padding:0 4px;line-height:20px;min-width:0}
+.mvpc-chase .mvpc-picker{border-bottom:1px solid var(--color-border-light-2,#7a7971);padding-bottom:6px}
+.mvpc-chase .mvpc-picker select{width:auto;max-width:22em}
 .mvpc-chase .mvpc-pill{font-size:.8em;padding:0 5px;border-radius:8px;border:1px solid currentColor;opacity:.85}
 </style>`;
 
@@ -391,15 +416,22 @@ export function renderTracker(
   state: ChaseState | null,
   isGM: boolean,
   playerOwned: (id: string) => boolean = () => false,
-  sheet: { skills?: string[]; weapons?: { id: string; name: string }[]; logOpen?: boolean } = {}
+  sheet: { skills?: string[]; weapons?: { id: string; name: string }[]; logOpen?: boolean; saved?: SavedChase[] } = {}
 ): string {
   const skills = sheet.skills?.length ? sheet.skills : DEFAULT_SKILLS;
   const suggestions = [...skills, ...CHARACTERISTIC_NAMES, 'Luck'];
   const datalist = `<datalist id="mvpc-chase-checks">${suggestions.map(s => `<option value="${esc(s)}"></option>`).join('')}</datalist>`;
   const weapons = sheet.weapons ?? [];
+  const saved = sheet.saved ?? [];
+  const picker =
+    isGM && saved.length
+      ? `<div class="mvpc-row mvpc-picker"><label>Chase <select data-field="chasePick">${state ? '' : '<option value="" selected>— pick a saved chase —</option>'}${saved
+          .map(c => `<option value="${esc(c.id)}"${c.active ? ' selected' : ''}>${esc(c.name)} (${esc(c.status)})</option>`)
+          .join('')}${state ? '<option value="__new">＋ New chase…</option>' : ''}</select></label><span class="mvpc-hint">Saved chases keep everything; switch any time.</span></div>`
+      : '';
   if (!state) {
     if (!isGM) return `${STYLE}<p>No chase is running.</p>`;
-    return `${STYLE}
+    return `${STYLE}${picker}
       <p>Run a chase with the Keeper Companion's MvP rules. Everyone starts in Location 1 with MvP equal to MOV.</p>
       <div class="mvpc-row"><label>Chase <input name="chaseName" type="text" placeholder="Cairo bazaar"></label>
       <label>Location 1 <input name="firstLocation" type="text" placeholder="the spice alley"></label></div>
@@ -408,7 +440,7 @@ export function renderTracker(
 
   const current = currentParticipant(state);
   const name = (id: string): string => state.participants.find(p => p.id === id)?.name ?? id;
-  const parts: string[] = [STYLE, datalist];
+  const parts: string[] = [STYLE, datalist, picker];
   parts.push(`<div class="mvpc-row"><b>${esc(state.name)}</b>${state.round > 0 ? `<span class="mvpc-pill">Round ${String(state.round)}</span>` : '<span class="mvpc-pill">Setting up</span>'}</div>`);
   if (state.outcome) parts.push(`<p class="mvpc-outcome">${esc(state.outcome)}</p>`);
 
@@ -491,7 +523,7 @@ export function renderTracker(
       const ask = `<button type="button" data-chase="request" title="Post a roll button for the player"><i class="fa-solid fa-comment-dots"></i> Ask player</button>`;
       const roll = `<button type="button" data-chase="roll"><i class="fa-solid fa-dice-d20"></i> ${playerOwned(current.id) ? 'Roll for them' : 'Roll'}</button>`;
       turn += `${rollOptions(weapons, true)}
-        <div class="mvpc-row mvpc-actions">${playerOwned(current.id) ? ask + roll : roll + ask}
+        <div class="mvpc-row mvpc-actions">${playerOwned(current.id) ? ask + roll : roll}
         <button type="button" data-chase="pass">Passed</button><button type="button" data-chase="fail">Failed</button>
         <button type="button" data-chase="skip" title="Does something else this turn">Skip</button></div>`;
     }
@@ -516,8 +548,8 @@ export function renderTracker(
     const restart = `<button type="button" data-chase="restart" title="Same people and locations; everyone back to Location 1 with full MvP"><i class="fa-solid fa-rotate-left"></i> Restart</button>`;
     parts.push(
       state.outcome
-        ? `<div class="mvpc-row">${restart}<button type="button" data-chase="clear"><i class="fa-solid fa-broom"></i> Clear</button></div>`
-        : `<div class="mvpc-row"><input type="text" name="endText" placeholder="Outcome (optional)" style="flex:1"><button type="button" data-chase="end"><i class="fa-solid fa-flag"></i> End chase</button>${state.round > 0 ? restart : ''}<button type="button" data-chase="clear" title="Throw the chase away"><i class="fa-solid fa-trash"></i></button></div>`
+        ? `<div class="mvpc-row">${restart}<button type="button" data-chase="clear" title="Delete this chase for good"><i class="fa-solid fa-trash"></i> Delete</button></div>`
+        : `<div class="mvpc-row"><input type="text" name="endText" placeholder="Outcome (optional)" style="flex:1"><button type="button" data-chase="end"><i class="fa-solid fa-flag"></i> End chase</button>${state.round > 0 ? restart : ''}<button type="button" data-chase="clear" title="Delete this chase for good"><i class="fa-solid fa-trash"></i></button></div>`
     );
   }
   return parts.join('');

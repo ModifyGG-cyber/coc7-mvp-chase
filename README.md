@@ -29,13 +29,15 @@ A Foundry VTT module that runs chases with the **Keeper Companion's optional "Ne
 5. When it's a player character's turn, the player gets a roll button in chat straight away, and their roll resolves the turn. If they fail, they get buttons in chat to **roll their own 1D6** MvP loss, **spend Luck** or **push** the roll. Untick "Players roll their own checks" to roll everything yourself.
 6. For the Keeper's characters, or to override, click one of these (set **Bonus** first for bonus or penalty dice):
    - **Roll** rolls as the character, using the normal CoC7 check card.
-   - **Ask player** posts a roll button (again).
+   - **Ask player** posts a roll button (again). It only shows for characters a player owns.
    - **Passed** or **Failed** records a roll made at the table.
    - **Skip** passes the turn.
    - **Shooting** adds a penalty die to the chase check. Pick a ranged weapon next to it and the CoC7 attack card is opened too, with the penalty die already set.
 7. After a failure, choose **Lose 1D6 MvP**, **Spend Luck** or **Push** in the tracker, or let the player choose in chat.
 
 To fix a mistake, use the ◀ ▶ arrows by a character's location to move them back or forward one location (their MvP and turn don't change), or edit MvP and location directly. **Restart** puts the same chase back to the start: same people and locations, everyone in Location 1 with full MvP, ready to press Start again.
+
+**Saved chases:** pick **＋ New chase…** in the Chase list at the top of the tracker to set the current chase aside and make another, so you can prepare several before a session (name, locations, challenges and characters). Switch between them from the same list; each keeps everything, even mid-chase. The trash button deletes only the chase on the table.
 
 Every step is posted to chat. Players see a read-only tracker.
 

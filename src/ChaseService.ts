@@ -41,6 +41,8 @@ import {
 
 export const CHASE_MODULE_ID = 'coc7-mvp-chase';
 export const CHASE_SETTING = 'chase';
+/** Chases set aside: premade ones and ones switched away from. The active chase lives in CHASE_SETTING. */
+export const LIBRARY_SETTING = 'library';
 
 const CHARACTERISTICS = ['str', 'con', 'siz', 'dex', 'app', 'int', 'pow', 'edu'];
 const DIFFICULTIES: Coc7Difficulty[] = ['regular', 'hard', 'extreme', 'critical'];
@@ -484,6 +486,82 @@ export async function restartChase(): Promise<Coc7ChaseView> {
 
 export async function clearChase(): Promise<void> {
   requireGM();
+  await saveChase(null);
+}
+
+// ---------- saved chases ----------
+
+export function loadLibrary(): Record<string, ChaseState> {
+  try {
+    const raw = globals().game.settings.get(CHASE_MODULE_ID, LIBRARY_SETTING) as Record<string, { version?: unknown } | null> | null | undefined;
+    if (!raw || typeof raw !== 'object') return {};
+    const out: Record<string, ChaseState> = {};
+    for (const [id, value] of Object.entries(raw)) if (value && typeof value === 'object' && value.version === 1) out[id] = clone(value as ChaseState);
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+async function saveLibrary(library: Record<string, ChaseState>): Promise<void> {
+  // Replace the whole object, so deleted chases don't linger in a merged setting.
+  await globals().game.settings.set(CHASE_MODULE_ID, LIBRARY_SETTING, library);
+}
+
+export interface SavedChase {
+  id: string;
+  name: string;
+  active: boolean;
+  status: string;
+}
+
+function statusOf(state: ChaseState): string {
+  if (state.outcome) return 'over';
+  return state.round > 0 ? `round ${String(state.round)}` : 'ready';
+}
+
+/** The chase on the table first, then the saved ones by name. */
+export function listChases(): SavedChase[] {
+  const active = loadChase();
+  const saved = Object.values(loadLibrary())
+    .filter(s => s.id !== active?.id)
+    .sort((a, b) => a.name.localeCompare(b.name))
+    .map(s => ({ id: s.id, name: s.name, active: false, status: statusOf(s) }));
+  return active ? [{ id: active.id, name: active.name, active: true, status: statusOf(active) }, ...saved] : saved;
+}
+
+/** Puts the chase on the table aside, keeping everything about it. */
+export async function setAsideChase(): Promise<void> {
+  requireGM();
+  const active = loadChase();
+  if (!active) return;
+  const library = loadLibrary();
+  library[active.id] = active;
+  await saveLibrary(library);
+  await saveChase(null);
+}
+
+/** Brings a saved chase to the table; the one there now is set aside. */
+export async function switchChase(id: string): Promise<Coc7ChaseView> {
+  requireGM();
+  const library = loadLibrary();
+  const next = library[id];
+  if (!next) throw new Error('That saved chase is gone.');
+  const active = loadChase();
+  const rest = Object.fromEntries(Object.entries(library).filter(([key]) => key !== id));
+  if (active && active.id !== id) rest[active.id] = active;
+  await saveLibrary(rest);
+  await saveChase(next);
+  return viewOf(next);
+}
+
+/** Deletes the chase on the table for good. */
+export async function deleteActiveChase(): Promise<void> {
+  requireGM();
+  const active = loadChase();
+  if (!active) return;
+  const library = loadLibrary();
+  if (library[active.id]) await saveLibrary(Object.fromEntries(Object.entries(library).filter(([key]) => key !== active.id)));
   await saveChase(null);
 }
 

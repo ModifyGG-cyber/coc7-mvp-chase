@@ -1,7 +1,7 @@
 /**
  * The chase service against a fake Foundry: settings store, CoC7 actors whose checks post cards, chat and dice.
  */
-import { getChaseView, handleCheckCard, handlePlayerChoice, resolveFailure, rollFromButton, startNewChase, takeTurn, updateLocation, type RollFlag } from '../ChaseService';
+import { deleteActiveChase, getChaseView, handleCheckCard, listChases, setAsideChase, switchChase, handlePlayerChoice, resolveFailure, rollFromButton, startNewChase, takeTurn, updateLocation, type RollFlag } from '../ChaseService';
 
 type Hook = (...args: unknown[]) => void;
 
@@ -315,4 +315,32 @@ test('shooting fires the chosen weapon with a penalty die on its attack card, an
   expect(created?.content).toContain('value="-2"');
   expect(chat.some(c => c.content?.includes('shoots .38 Revolver while running'))).toBe(true);
   expect(hooks['preCreateChatMessage']?.size ?? 0).toBe(0);
+});
+
+test('several chases can be premade, set aside and switched between', async () => {
+  actors.set('a', makeActor('a', { dex: 60, mov: 8 }));
+  actors.set('b', makeActor('b', { dex: 50, mov: 7 }));
+  await startNewChase({ name: 'Cairo bazaar', quarry: [{ actorId: 'a' }], pursuers: [{ actorId: 'b' }], setupOnly: true });
+  await updateLocation(2, { name: 'the rooftops' });
+  await setAsideChase();
+  expect(getChaseView().active).toBe(false);
+  await startNewChase({ name: 'Docks', quarry: [{ actorId: 'b' }], pursuers: [{ actorId: 'a' }] });
+  expect(listChases().map(c => [c.name, c.active, c.status])).toEqual([
+    ['Docks', true, 'round 1'],
+    ['Cairo bazaar', false, 'ready']
+  ]);
+
+  const cairo = listChases().find(c => c.name === 'Cairo bazaar');
+  if (!cairo) throw new Error('missing');
+  const view = await switchChase(cairo.id);
+  expect(view.name).toBe('Cairo bazaar');
+  expect(view.locations?.map(l => l.name)).toEqual(['Location 1', 'the rooftops']);
+  // The Docks chase was kept, mid-chase.
+  expect(listChases().map(c => [c.name, c.active, c.status])).toEqual([
+    ['Cairo bazaar', true, 'ready'],
+    ['Docks', false, 'round 1']
+  ]);
+
+  await deleteActiveChase();
+  expect(listChases().map(c => c.name)).toEqual(['Docks']);
 });
