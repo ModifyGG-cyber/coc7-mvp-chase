@@ -11,9 +11,11 @@ import {
   majorWound,
   recordRoll,
   removeParticipant,
+  resetChase,
   setLocation,
   skipTurn,
   startChase,
+  stepLocation,
   takeLoss,
   targetFor,
   tierValue,
@@ -220,4 +222,35 @@ describe('MvP chase rules', () => {
     expect(tierValue(65, 'average')).toBe(32);
     expect(tierValue(65, 'poor')).toBe(13);
   });
+});
+
+test('restart keeps people and locations, and the Keeper can step a character back or forward', () => {
+  const state = createChase({ id: 'c' });
+  setLocation(state, 1, { check: DEX });
+  setLocation(state, 2, { name: 'the wall', check: CLIMB, difficulty: 'hard' });
+  addParticipant(state, person('q', 'quarry', 60, 8));
+  addParticipant(state, person('p', 'pursuer', 50, 7));
+  startChase(state, { headStart: true });
+  roll(state, 10, 60); // q passes → Location 2
+  roll(state, 99, 50); // p fails
+  takeLoss(state, 7); // p drops out, q escapes
+  expect(state.outcome).toMatch(/escaped/);
+
+  // Mistake: step q back, then forward again.
+  stepLocation(state, 'q', -1);
+  expect(state.participants[0]?.location).toBe(1);
+  expect(() => stepLocation(state, 'q', -1)).toThrow(/already in Location 1/);
+  stepLocation(state, 'q', 1);
+  expect(state.participants[0]?.location).toBe(2);
+
+  resetChase(state, p => p.mov);
+  expect(state.round).toBe(0);
+  expect(state.outcome).toBeNull();
+  expect(state.participants.map(p => [p.id, p.location, p.mvp, p.status, p.nextPenaltyDice])).toEqual([
+    ['q', 1, 8, 'active', 0],
+    ['p', 1, 7, 'active', 0]
+  ]);
+  expect(state.locations.find(l => l.index === 2)).toMatchObject({ name: 'the wall', difficulty: 'hard' });
+  startChase(state);
+  expect(currentParticipant(state)?.id).toBe('q');
 });
