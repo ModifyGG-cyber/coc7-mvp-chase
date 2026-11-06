@@ -1,7 +1,7 @@
 /**
  * The chase service against a fake Foundry: settings store, CoC7 actors whose checks post cards, chat and dice.
  */
-import { getChaseView, handleCheckCard, handlePlayerChoice, resolveFailure, startNewChase, takeTurn, updateLocation } from '../ChaseService';
+import { getChaseView, handleCheckCard, handlePlayerChoice, resolveFailure, rollFromButton, startNewChase, takeTurn, updateLocation, type RollFlag } from '../ChaseService';
 
 type Hook = (...args: unknown[]) => void;
 
@@ -22,7 +22,7 @@ interface FakeActor {
 let store: Record<string, unknown>;
 let hooks: Record<string, Map<number, Hook>>;
 let nextRolls: number[];
-let chat: { content?: string; flavor?: string; flags?: Record<string, { choice?: { chaseId: string; participantId: string } }> }[];
+let chat: { content?: string; flavor?: string; flags?: Record<string, { choice?: { chaseId: string; participantId: string }; roll?: RollFlag }> }[];
 let actors: Map<string, FakeActor>;
 
 function rollQueue(n: number): number {
@@ -190,7 +190,8 @@ test('a missing skill falls back to DEX by tier, and a player roll card resolves
   // The player rolls from the posted button; the CoC7 card resolves the turn.
   const asked = await takeTurn({ mode: 'request' });
   expect(asked.awaiting).toMatchObject({ participant: 'q' });
-  expect(chat.at(-1)?.content).toContain('@coc7.check[subtype:skill,name:Swim]');
+  expect(chat.at(-1)?.content).toContain('data-mvpc-roll');
+  expect(chat.at(-1)?.flags?.['coc7-mvp-chase']).toMatchObject({ roll: { participantId: 'q', kind: 'skill', name: 'Swim', difficulty: 'regular', bonusDice: 0 } });
   const card = {
     id: 'm1',
     flags: { CoC7: { load: { as: 'CoC7Check', actorUuid: 'Actor.q', dicePool: { threshold: 50, difficulty: 1, currentPoolModifier: 0, rolledDice: [{ rolled: true, baseDie: 2, unitDie: 5, bonusDice: [], penaltyDice: [] }] } } } }
@@ -223,7 +224,7 @@ test('players are asked to roll by default, roll their own 1D6, and can push', a
   await startNewChase({ quarry: [{ actorId: 'inv' }], pursuers: [{ actorId: 'cultist' }], firstCheck: { kind: 'skill', name: 'Climb' } });
   // The investigator belongs to a player: the roll button is posted at once.
   expect(getChaseView().awaiting).toMatchObject({ participant: 'inv' });
-  expect(chat.at(-1)?.content).toContain('@coc7.check[subtype:skill,name:Climb]');
+  expect(chat.at(-1)?.content).toContain('Roll Climb</button>');
   expect(chat.at(-1)?.content).toContain('Climb check for <b>inv</b> at Location 1');
   expect(chat.at(-1)?.content).toContain('Climb 40%');
 
@@ -255,6 +256,14 @@ test('players are asked to roll by default, roll their own 1D6, and can push', a
   // Round 2: the player is asked again (location 2 needs a challenge first), fails, and rolls their own 1D6.
   await updateLocation(2, { check: { kind: 'skill', name: 'Climb' }, difficulty: 'hard' });
   expect(getChaseView().awaiting).toMatchObject({ participant: 'inv', challenge: 'Hard Climb' });
+  // The roll button rolls straight on the character with the Keeper's difficulty and dice; an old button is refused.
+  const hardFlag = chat.at(-1)?.flags?.['coc7-mvp-chase']?.roll;
+  if (!hardFlag) throw new Error('no roll flag');
+  Object.assign(globalThis, { fromUuidSync: (uuid: string) => (uuid === 'Actor.inv' ? Object.assign(inv, { isOwner: true }) : null) });
+  inv.skillCheck.mockImplementationOnce(() => Promise.resolve());
+  await rollFromButton(hardFlag);
+  expect(inv.skillCheck).toHaveBeenLastCalledWith('Climb', true, { difficulty: '+', poolModifier: 0 });
+  await expect(rollFromButton({ ...hardFlag, difficulty: 'regular' })).rejects.toThrow(/no longer waiting/);
   expect(chat.at(-1)?.content).toContain('Climb 40% · Hard 20%');
   await handleCheckCard(checkCard('Actor.inv', 40, 5, 5, { difficulty: 2 }));
   const second = chat.at(-1)?.flags?.['coc7-mvp-chase']?.choice;

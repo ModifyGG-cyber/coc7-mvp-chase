@@ -12,7 +12,7 @@ import type {
   Coc7Difficulty
 } from './types';
 import { DIFFICULTY_CODE, resolveD100, successLevel, meetsDifficulty } from './d100';
-import { checkCardSummary, getCoc7Globals, resolveActor as resolveActorTarget, rollSystemCheck, type Coc7Actor, type Coc7ChatMessage } from './coc7';
+import { checkCardSummary, findSkill, getCoc7Globals, resolveActor as resolveActorTarget, rollSystemCheck, type Coc7Actor, type Coc7ChatMessage } from './coc7';
 import {
   addParticipant,
   beginPush,
@@ -265,7 +265,20 @@ async function requestRoll(
   }
   await post(
     state,
-    `<p>${what} for <b>${escapeHtml(p.name)}</b> at ${where}${pushed ? '. Failing a pushed roll means out of the chase' : ''}:</p>${value}<p>${rollLink(p, challenge.check, challenge.difficulty, challenge.bonusDice)}</p>`
+    `<p>${what} for <b>${escapeHtml(p.name)}</b> at ${where}${pushed ? '. Failing a pushed roll means out of the chase' : ''}:</p>${value}<div class="mvpc-choices"><button type="button" data-mvpc-roll="1"><i class="fa-solid fa-dice-d20"></i> Roll ${escapeHtml(label)}</button></div>`,
+    {
+      flags: {
+        roll: {
+          chaseId: state.id,
+          participantId: p.id,
+          actorUuid: p.actorUuid,
+          kind: challenge.check.kind,
+          name: challenge.check.name,
+          difficulty: challenge.difficulty,
+          bonusDice: challenge.bonusDice
+        }
+      }
+    }
   );
 }
 
@@ -509,12 +522,45 @@ async function rollCheck(state: ChaseState, p: ChaseParticipant, check: ChaseChe
   return { total: result.total, target: targetFor(result.threshold, difficulty), passed: result.passed, messageId: result.messageId };
 }
 
-function rollLink(p: ChaseParticipant, check: ChaseCheck, difficulty: Coc7Difficulty, bonusDice: number): string {
-  const options = [`subtype:${check.kind}`, `name:${check.name}`];
-  if (difficulty !== 'regular') options.push(`difficulty:${DIFFICULTY_CODE[difficulty]}`);
-  if (bonusDice !== 0) options.push(`poolModifier:${bonusDice > 0 ? '+' : ''}${String(bonusDice)}`);
-  const label = `${checkLabel(check, difficulty)} (${p.name})`.replace(/[{}[\],]/g, '');
-  return `@coc7.check[${options.join(',')}]{${label}}`;
+/** What a chase roll button carries, so the click rolls for the right character with the right dice. */
+export interface RollFlag {
+  chaseId: string;
+  participantId: string;
+  actorUuid: string;
+  kind: ChaseCheck['kind'];
+  name: string;
+  difficulty: Coc7Difficulty;
+  bonusDice: number;
+}
+
+/** True while this roll button is the one the chase is waiting for. */
+export function rollButtonLive(flag: RollFlag): boolean {
+  const state = loadChase();
+  const aw = state?.awaiting;
+  return state?.id === flag.chaseId && aw?.participantId === flag.participantId && aw.check.kind === flag.kind && aw.check.name === flag.name && aw.difficulty === flag.difficulty && aw.bonusDice === flag.bonusDice;
+}
+
+/**
+ * The chase's roll button: rolls the check straight on the character, through the CoC7 system, so the
+ * normal check card is posted and the Keeper's client resolves the turn from it. Unlike a CoC7 link,
+ * it never asks which character, and the Keeper clicking it rolls rather than re-posting the request.
+ */
+export async function rollFromButton(flag: RollFlag): Promise<void> {
+  if (!rollButtonLive(flag)) throw new Error('This roll is no longer waiting. Use the newest roll button in chat.');
+  const lookup = (globalThis as { fromUuidSync?: (uuid: string) => unknown }).fromUuidSync;
+  const actor = lookup?.(flag.actorUuid) as (ActorLike & { isOwner?: boolean }) | null | undefined;
+  if (!actor) throw new Error('The character for this roll is gone.');
+  if (actor.isOwner === false) throw new Error(`Only ${actor.name}'s player or the Keeper can roll this.`);
+  const options = { difficulty: DIFFICULTY_CODE[flag.difficulty], poolModifier: flag.bonusDice };
+  if (flag.kind === 'skill') {
+    const skill = findSkill(actor, flag.name);
+    if (!skill) throw new Error(`${actor.name} has no ${flag.name} skill. The Keeper can roll it for them from the chase tracker.`);
+    await actor.skillCheck(skill.name, true, options);
+  } else if (flag.kind === 'characteristic') {
+    await actor.characteristicCheck(flag.name, true, options);
+  } else {
+    await actor.attributeCheck(flag.name, true, options);
+  }
 }
 
 async function announceRoll(state: ChaseState, p: ChaseParticipant, outcome: 'moved' | 'pending' | 'out', roll: RollOutcome, check: string): Promise<void> {

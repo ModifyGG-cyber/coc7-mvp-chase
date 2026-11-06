@@ -19,7 +19,10 @@ import {
   handleCheckCard,
   handlePlayerChoice,
   loadChase,
+  rollButtonLive,
+  rollFromButton,
   rollMvpLoss,
+  type RollFlag,
   mutateChase,
   resolveFailure,
   startNewChase,
@@ -78,6 +81,31 @@ interface ChoiceFlag {
   participantId: string;
   actorUuid: string;
   total: number;
+}
+
+/** The roll button on a chase roll request: only the character's owners and the Keeper see it. */
+function wireRollCard(message: { flags?: Record<string, Record<string, unknown> | undefined> }, html: HTMLElement): void {
+  const flag = message.flags?.[CHASE_MODULE_ID]?.['roll'] as RollFlag | undefined;
+  const button = html.querySelector<HTMLButtonElement>('[data-mvpc-roll]');
+  if (!flag || !button) return;
+  const actor = g().fromUuidSync?.(flag.actorUuid) ?? null;
+  if (!g().game.user?.isGM && actor?.isOwner !== true) {
+    button.style.display = 'none';
+    return;
+  }
+  if (!rollButtonLive(flag)) {
+    button.disabled = true;
+    button.title = 'This roll is no longer waiting';
+    return;
+  }
+  button.addEventListener('click', event => {
+    event.preventDefault();
+    button.disabled = true;
+    void rollFromButton(flag).catch((error: unknown) => {
+      g().ui.notifications?.warn(error instanceof Error ? error.message : String(error));
+      button.disabled = false;
+    });
+  });
 }
 
 /** The buttons on a player's failure card: roll their own 1D6, spend Luck or push. */
@@ -241,6 +269,7 @@ g().Hooks.once('init', () => {
     if (!isCoc7() || !(args[1] instanceof HTMLElement)) return;
     try {
       wireChoiceCard(args[0] as Parameters<typeof wireChoiceCard>[0], args[1]);
+      wireRollCard(args[0] as Parameters<typeof wireRollCard>[0], args[1]);
     } catch (error) {
       console.warn('MvP Chase | Could not set up the chase card:', error);
     }
