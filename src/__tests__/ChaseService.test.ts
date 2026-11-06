@@ -156,6 +156,9 @@ test('a full chase: roll, fail, 1D6 loss, Luck, and the quarry escapes', async (
   nextRolls = [2];
   const loss = await resolveFailure('take-loss');
   expect(loss.loss).toBe(2);
+  // The 1D6 is posted as a plain chase card, with no roll attached for damage or healing buttons.
+  expect(chat.some(c => c.content?.includes('thug</b> rolls 1D6 MvP loss: <b>2</b>'))).toBe(true);
+  expect(chat.some(c => 'rolls' in c)).toBe(false);
   expect(loss.participants?.find(p => p.name === 'thug')).toMatchObject({ mvp: 1, location: 2 });
   expect(loss.round).toBe(2);
 
@@ -221,6 +224,8 @@ test('players are asked to roll by default, roll their own 1D6, and can push', a
   // The investigator belongs to a player: the roll button is posted at once.
   expect(getChaseView().awaiting).toMatchObject({ participant: 'inv' });
   expect(chat.at(-1)?.content).toContain('@coc7.check[subtype:skill,name:Climb]');
+  expect(chat.at(-1)?.content).toContain('Climb check for <b>inv</b> at Location 1');
+  expect(chat.at(-1)?.content).toContain('Climb 40%');
 
   // The player fails (75 vs 40): the failure card offers the choices, flagged for the player's buttons.
   expect(await handleCheckCard(checkCard('Actor.inv', 40, 7, 5))).toBe(true);
@@ -238,7 +243,7 @@ test('players are asked to roll by default, roll their own 1D6, and can push', a
   // The player pushes: a pushed roll button is posted, and the pushed roll passes.
   await handlePlayerChoice({ chaseId: flag.chaseId, participantId: 'inv', userId: 'player', action: 'push' }, { id: 'player' });
   expect(getChaseView().awaiting).toMatchObject({ participant: 'inv' });
-  expect(chat.at(-1)?.content).toMatch(/push the roll/);
+  expect(chat.at(-1)?.content).toContain('Pushed Climb roll for <b>inv</b>');
   expect(await handleCheckCard(checkCard('Actor.inv', 40, 2, 1))).toBe(true);
   expect(getChaseView().participants?.find(p => p.name === 'inv')?.location).toBe(2);
 
@@ -250,6 +255,7 @@ test('players are asked to roll by default, roll their own 1D6, and can push', a
   // Round 2: the player is asked again (location 2 needs a challenge first), fails, and rolls their own 1D6.
   await updateLocation(2, { check: { kind: 'skill', name: 'Climb' }, difficulty: 'hard' });
   expect(getChaseView().awaiting).toMatchObject({ participant: 'inv', challenge: 'Hard Climb' });
+  expect(chat.at(-1)?.content).toContain('Climb 40% · Hard 20%');
   await handleCheckCard(checkCard('Actor.inv', 40, 5, 5, { difficulty: 2 }));
   const second = chat.at(-1)?.flags?.['coc7-mvp-chase']?.choice;
   if (!second) throw new Error('no flag');

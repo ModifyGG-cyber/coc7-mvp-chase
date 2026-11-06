@@ -32,7 +32,7 @@ import {
 } from './chaseState';
 
 const CHARACTERISTIC_NAMES = ['STR', 'CON', 'SIZ', 'DEX', 'APP', 'INT', 'POW', 'EDU'];
-const SUGGESTIONS = ['Climb', 'Jump', 'Dodge', 'Swim', 'Stealth', 'Spot Hidden', 'Drive Auto', 'Ride', 'Pilot', 'Persuade', 'Throw', ...CHARACTERISTIC_NAMES, 'Luck'];
+const SUGGESTIONS = ['Athletics', 'Dodge', 'Stealth', 'Spot Hidden', 'Drive Auto', 'Ride', 'Pilot', 'Social', 'Navigate', 'Track', ...CHARACTERISTIC_NAMES, 'Luck'];
 const DIFFICULTIES: Coc7Difficulty[] = ['regular', 'hard', 'extreme'];
 
 interface AppV2Instance {
@@ -54,7 +54,7 @@ interface TrackerGlobals {
 
 const g = (): TrackerGlobals => globalThis as unknown as TrackerGlobals;
 
-/** Turns what the Keeper typed ("Climb", "DEX", "Luck") into a check. */
+/** Turns what the Keeper typed ("Athletics", "DEX", "Luck") into a check. */
 export function parseChallenge(text: string): Coc7ChaseCheckRef | null {
   const value = text.trim();
   if (!value) return null;
@@ -380,7 +380,7 @@ export function renderTracker(state: ChaseState | null, isGM: boolean, playerOwn
     .map(l =>
       isGM
         ? `<tr><td>${String(l.index)}</td><td><input type="text" value="${esc(l.name)}" data-loc="${String(l.index)}" data-field="name"></td>
-          <td><input type="text" list="mvpc-chase-checks" placeholder="e.g. Climb or DEX" value="${esc(challengeText(l.check))}" data-loc="${String(l.index)}" data-field="check"></td>
+          <td><input type="text" list="mvpc-chase-checks" placeholder="e.g. Athletics or DEX" value="${esc(challengeText(l.check))}" data-loc="${String(l.index)}" data-field="check"></td>
           <td><select data-loc="${String(l.index)}" data-field="difficulty">${options(DIFFICULTIES, l.difficulty)}</select></td><td>${occupants(l.index)}</td></tr>`
         : `<tr><td>${String(l.index)}</td><td>${esc(l.name)}</td><td>${l.check ? esc(checkLabel(l.check, l.difficulty)) : '—'}</td><td></td><td>${occupants(l.index)}</td></tr>`
     )

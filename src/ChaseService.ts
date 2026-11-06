@@ -143,7 +143,7 @@ function actorOf(p: ChaseParticipant): ActorLike {
 export function checkFromRef(ref: Coc7ChaseCheckRef): ChaseCheck {
   const kind = ref.kind as string;
   const name = (ref.name as string | undefined)?.trim() ?? '';
-  if (!name) throw new Error('A challenge needs a name, e.g. Climb or dex');
+  if (!name) throw new Error('A challenge needs a name, e.g. Athletics or dex');
   if (kind === 'characteristic') {
     if (!CHARACTERISTICS.includes(name.toLowerCase())) throw new Error(`characteristic must be one of ${CHARACTERISTICS.join(', ')}`);
     return { kind: 'characteristic', name: name.toLowerCase() };
@@ -178,6 +178,18 @@ function rawValue(actor: ActorLike, check: ChaseCheck, p: ChaseParticipant): num
   return skill ? num(skill.system.value) : tierValue(num(actor.system.characteristics?.['dex']?.value), p.skillTier);
 }
 
+/** "Athletics 60% · Hard 30% · 1 penalty die", for the roll request card. */
+function valueText(actor: ActorLike, challenge: { check: ChaseCheck; difficulty: Coc7Difficulty; bonusDice: number }, p: ChaseParticipant): string {
+  const { check, difficulty, bonusDice } = challenge;
+  const raw = rawValue(actor, check, p);
+  const name = check.kind === 'attribute' ? 'Luck' : check.kind === 'characteristic' ? check.name.toUpperCase() : check.name;
+  const missing = check.kind === 'skill' && !hasSkill(actor, check.name) ? ` (no ${check.name} skill: ${p.skillTier} DEX)` : '';
+  const parts = [`${name} ${String(raw)}%${missing}`];
+  if (difficulty !== 'regular') parts.push(`${difficulty[0]?.toUpperCase() ?? ''}${difficulty.slice(1)} ${String(targetFor(raw, difficulty))}%`);
+  if (bonusDice) parts.push(`${String(Math.abs(bonusDice))} ${bonusDice > 0 ? 'bonus' : 'penalty'} ${Math.abs(bonusDice) === 1 ? 'die' : 'dice'}`);
+  return parts.join(' · ');
+}
+
 // ---------- chat ----------
 
 async function post(state: ChaseState, html: string, options: { whisperGM?: boolean; flags?: Record<string, unknown> } = {}): Promise<void> {
@@ -189,6 +201,26 @@ async function post(state: ChaseState, html: string, options: { whisperGM?: bool
     ...(whisper?.length ? { whisper } : {}),
     ...(options.flags ? { flags: { [CHASE_MODULE_ID]: options.flags } } : {})
   });
+}
+
+/**
+ * Rolls the 1D6 MvP loss and posts it as a plain chase card. The roll is not attached to the message,
+ * so nothing offers to apply it as damage or healing. Dice So Nice still shows the die when it's on.
+ */
+export async function rollMvpLoss(name: string, chaseName: string): Promise<number> {
+  const { Roll, ChatMessage } = getCoc7Globals();
+  const roll = await new Roll('1d6').evaluate();
+  const dice3d = (globalThis as { game?: { dice3d?: { showForRoll(roll: unknown, user?: unknown, sync?: boolean): Promise<unknown> } }; }).game?.dice3d;
+  try {
+    await dice3d?.showForRoll(roll, (globalThis as { game?: { user?: unknown } }).game?.user, true);
+  } catch {
+    // the animation is optional
+  }
+  await ChatMessage.create({
+    content: `<div class="mvpc-chase-card"><h4>🏃 ${escapeHtml(chaseName)}</h4><p><b>${escapeHtml(name)}</b> rolls 1D6 MvP loss: <b>${String(roll.total)}</b></p></div>`,
+    speaker: { alias: 'Chase' }
+  });
+  return roll.total;
 }
 
 // ---------- players roll their own ----------
@@ -219,8 +251,19 @@ async function requestRoll(
 ): Promise<void> {
   state.awaiting = { participantId: p.id, check: challenge.check, difficulty: challenge.difficulty, bonusDice: challenge.bonusDice, pushed };
   await saveChase(state);
-  const what = pushed ? `push the roll for ${escapeHtml(locationLabel(state, p.location))} (failing means out of the chase)` : `roll for ${escapeHtml(locationLabel(state, p.location))}`;
-  await post(state, `<p><b>${escapeHtml(p.name)}</b>, ${what}:</p><p>${rollLink(p, challenge.check, challenge.difficulty, challenge.bonusDice)}</p>`);
+  const label = checkLabel(challenge.check, challenge.difficulty);
+  const what = pushed ? `Pushed ${escapeHtml(label)} roll` : `${escapeHtml(label)} check`;
+  const where = `Location ${String(p.location)}${locationLabel(state, p.location) !== `Location ${String(p.location)}` ? ` (${escapeHtml(locationLabel(state, p.location))})` : ''}`;
+  let value = '';
+  try {
+    value = `<p>${escapeHtml(valueText(actorOf(p), challenge, p))}</p>`;
+  } catch {
+    // the value is a courtesy; the roll still works without it
+  }
+  await post(
+    state,
+    `<p>${what} for <b>${escapeHtml(p.name)}</b> at ${where}${pushed ? '. Failing a pushed roll means out of the chase' : ''}:</p>${value}<p>${rollLink(p, challenge.check, challenge.difficulty, challenge.bonusDice)}</p>`
+  );
 }
 
 /** When the next character belongs to a player, asks that player to roll. */
@@ -569,10 +612,7 @@ export async function resolveFailure(action: 'take-loss' | 'luck' | 'push', fixe
       loss = Math.floor(fixedLoss);
       if (!Number.isFinite(loss) || loss < 0) throw new Error('loss must be zero or more');
     } else {
-      const { Roll } = getCoc7Globals();
-      const roll = (await new Roll('1d6').evaluate()) as { total: number; toMessage?(data: Record<string, unknown>): Promise<unknown> };
-      loss = roll.total;
-      await roll.toMessage?.({ flavor: `${p.name} loses 1D6 MvP`, speaker: { alias: 'Chase' } });
+      loss = await rollMvpLoss(p.name, state.name);
     }
     const change = takeLoss(state, loss);
     await saveChase(state);

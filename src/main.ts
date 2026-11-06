@@ -19,6 +19,7 @@ import {
   handleCheckCard,
   handlePlayerChoice,
   loadChase,
+  rollMvpLoss,
   mutateChase,
   resolveFailure,
   startNewChase,
@@ -58,8 +59,6 @@ interface Globals {
   Hooks: { on(hook: string, fn: (...args: unknown[]) => unknown): number; once(hook: string, fn: (...args: unknown[]) => unknown): number };
   ui: { notifications?: { error(msg: string): void; warn(msg: string): void; info(msg: string): void } };
   fromUuidSync?(uuid: string): { isOwner?: boolean; name?: string } | null;
-  Roll: new (formula: string) => { evaluate(): Promise<{ total: number; toMessage(data: Record<string, unknown>): Promise<unknown> }> };
-  ChatMessage: { getSpeaker?(data: Record<string, unknown>): unknown };
 }
 
 const g = (): Globals => globalThis as unknown as Globals;
@@ -115,13 +114,8 @@ async function choose(flag: ChoiceFlag, action: PlayerChoice['action']): Promise
   if (!user) return;
   const choice: PlayerChoice = { chaseId: flag.chaseId, participantId: flag.participantId, userId: user.id, action };
   if (action === 'take-loss') {
-    const roll = await new (g().Roll)('1d6').evaluate();
     const actor = g().fromUuidSync?.(flag.actorUuid) ?? null;
-    await roll.toMessage({
-      flavor: `${actor?.name ?? 'Chase'} loses 1D6 MvP`,
-      speaker: g().ChatMessage.getSpeaker?.({ actor }) ?? { alias: 'Chase' }
-    });
-    choice.loss = roll.total;
+    choice.loss = await rollMvpLoss(actor?.name ?? 'Chase', loadChase()?.name ?? 'Chase');
   }
   if (user.isGM) {
     await handlePlayerChoice(choice, user);

@@ -18,7 +18,7 @@ export type ChaseSkillTier = 'skilled' | 'average' | 'poor';
 
 export interface ChaseCheck {
   kind: Coc7CheckKind;
-  /** Skill name as on the sheet ("Climb"), or a characteristic key (dex, con, str, siz). */
+  /** Skill name as on the sheet ("Athletics"), or a characteristic key (dex, con, str, siz). */
   name: string;
 }
 
@@ -325,7 +325,7 @@ export function challengeFor(
   const location = ensureLocation(state, p.location);
   const check = options.check ?? location.check;
   if (!check) {
-    throw new Error(`${locationLabel(state, p.location)} has no challenge yet. Pick one (for example Climb, Dodge, or plain DEX) first.`);
+    throw new Error(`${locationLabel(state, p.location)} has no challenge yet. Pick one (for example Athletics, Dodge, or plain DEX) first.`);
   }
   let pool = options.bonusDice ?? 0;
   pool -= p.nextPenaltyDice;
