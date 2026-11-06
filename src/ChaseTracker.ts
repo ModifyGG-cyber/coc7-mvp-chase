@@ -93,6 +93,7 @@ function trackerClass(): AppV2Class {
 
     private busy = false;
     private listening = false;
+    private logOpen = false;
 
     _renderHTML(): Promise<string> {
       const state = loadChase();
@@ -100,7 +101,7 @@ function trackerClass(): AppV2Class {
       const current = state ? currentParticipant(state) : undefined;
       const weapons = current ? rangedWeapons(current) : [];
       return Promise.resolve(
-        renderTracker(state, Boolean(g().game.user?.isGM), id => players.has(id), { skills: participantSkillNames(state), weapons })
+        renderTracker(state, Boolean(g().game.user?.isGM), id => players.has(id), { skills: participantSkillNames(state), weapons, logOpen: this.logOpen })
       );
     }
 
@@ -110,6 +111,14 @@ function trackerClass(): AppV2Class {
         this.listening = true;
         content.addEventListener('click', event => void this.onClick(event));
         content.addEventListener('change', event => void this.onChange(event));
+        content.addEventListener(
+          'toggle',
+          event => {
+            const box = event.target as HTMLDetailsElement;
+            if (box.classList.contains('mvpc-log-box')) this.logOpen = box.open;
+          },
+          true
+        );
       }
     }
 
@@ -334,7 +343,16 @@ const STYLE = `<style>
 .mvpc-chase button{flex:0 0 auto;width:auto;padding:0 8px;line-height:24px}
 .mvpc-chase .mvpc-turn{border:1px solid var(--color-border-light-2,#7a7971);border-radius:4px;padding:6px;margin:6px 0}
 .mvpc-chase .mvpc-outcome{font-weight:bold;font-size:1.1em;margin:6px 0}
-.mvpc-chase .mvpc-log{max-height:9em;overflow:auto;font-size:.9em;margin:0;padding-left:1.2em}
+.mvpc-chase .mvpc-log{max-height:9em;overflow:auto;font-size:.9em;margin:4px 0 0;padding-left:1.2em}
+.mvpc-chase .mvpc-log-box{margin:6px 0}
+.mvpc-chase .mvpc-log-box summary{cursor:pointer;font-weight:bold;border-bottom:1px solid var(--color-border-light-2,#7a7971)}
+.mvpc-chase .mvpc-opts{display:grid;grid-template-columns:max-content 1fr;gap:6px 10px;align-items:center;margin:8px 0}
+.mvpc-chase .mvpc-opt-label{font-weight:bold;opacity:.85}
+.mvpc-chase .mvpc-opt{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.mvpc-chase .mvpc-opt select{width:auto}
+.mvpc-chase .mvpc-opt label{display:flex;gap:4px;align-items:center;white-space:nowrap}
+.mvpc-chase .mvpc-sep{width:1px;align-self:stretch;background:var(--color-border-light-2,#7a7971);opacity:.5}
+.mvpc-chase .mvpc-actions{border-top:1px solid var(--color-border-light-2,#7a7971);padding-top:6px}
 .mvpc-chase .mvpc-hint{font-size:.85em;opacity:.8}
 .mvpc-chase .mvpc-step{display:inline-flex;align-items:center;gap:2px;white-space:nowrap}
 .mvpc-chase .mvpc-step button{padding:0 4px;line-height:20px;min-width:0}
@@ -348,7 +366,16 @@ function options(values: string[], selected: string, labels?: Record<string, str
 }
 
 function bonusSelect(): string {
-  return `<label>Bonus <select name="bonusDice">${options(['2', '1', '0', '-1', '-2'], '0', { '2': '+2 bonus', '1': '+1 bonus', '0': 'none', '-1': '1 penalty', '-2': '2 penalty' })}</select></label>`;
+  return `<select name="bonusDice" title="Bonus or penalty dice on the chase check">${options(['2', '1', '0', '-1', '-2'], '0', { '2': '+2 bonus', '1': '+1 bonus', '0': 'No bonus', '-1': '1 penalty', '-2': '2 penalty' })}</select>`;
+}
+
+/** The roll options as labelled lines: dice (bonus, shooting) and an optional other check. */
+function rollOptions(weapons: { id: string; name: string }[], withCheck: boolean): string {
+  const dice = `<span class="mvpc-opt-label">Dice</span><div class="mvpc-opt">${bonusSelect()}<span class="mvpc-sep"></span>${shootingControls(weapons)}</div>`;
+  const check = withCheck
+    ? `<span class="mvpc-opt-label">Use instead</span><div class="mvpc-opt"><input type="text" name="useInstead" list="mvpc-chase-checks" placeholder="e.g. Social or DEX" style="width:11em"><span class="mvpc-hint">Blank uses the location's challenge</span></div>`
+    : '';
+  return `<div class="mvpc-opts">${dice}${check}</div>`;
 }
 
 function shootingControls(weapons: { id: string; name: string }[]): string {
@@ -364,7 +391,7 @@ export function renderTracker(
   state: ChaseState | null,
   isGM: boolean,
   playerOwned: (id: string) => boolean = () => false,
-  sheet: { skills?: string[]; weapons?: { id: string; name: string }[] } = {}
+  sheet: { skills?: string[]; weapons?: { id: string; name: string }[]; logOpen?: boolean } = {}
 ): string {
   const skills = sheet.skills?.length ? sheet.skills : DEFAULT_SKILLS;
   const suggestions = [...skills, ...CHARACTERISTIC_NAMES, 'Luck'];
@@ -457,17 +484,14 @@ export function renderTracker(
       const aw = state.awaiting;
       turn += `<div class="mvpc-row">Waiting for ${esc(name(aw.participantId))} to ${aw.pushed ? 'push' : 'roll'} ${esc(checkLabel(aw.check, aw.difficulty))}${aw.bonusDice ? ` (${aw.bonusDice > 0 ? '+' : ''}${String(aw.bonusDice)} dice)` : ''} from the button in chat…</div>`;
       if (isGM) {
-        turn += `<div class="mvpc-row">${aw.pushed ? '' : `${bonusSelect()}${shootingControls(weapons)}`}
-          <button type="button" data-chase="request" title="Post the roll button again${aw.pushed ? '' : ' with this bonus'}"><i class="fa-solid fa-comment-dots"></i> Ask again</button></div>
-          <div class="mvpc-row"><button type="button" data-chase="roll">Roll it for them</button><button type="button" data-chase="pass">Passed</button><button type="button" data-chase="fail">Failed</button>${aw.pushed ? '' : '<button type="button" data-chase="skip" title="Does something else this turn">Skip</button>'}</div>`;
+        turn += `${aw.pushed ? '' : rollOptions(weapons, false)}
+          <div class="mvpc-row mvpc-actions"><button type="button" data-chase="request" title="Post the roll button again${aw.pushed ? '' : ' with these dice'}"><i class="fa-solid fa-comment-dots"></i> Ask again</button><button type="button" data-chase="roll">Roll it for them</button><button type="button" data-chase="pass">Passed</button><button type="button" data-chase="fail">Failed</button>${aw.pushed ? '' : '<button type="button" data-chase="skip" title="Does something else this turn">Skip</button>'}</div>`;
       }
     } else if (isGM) {
       const ask = `<button type="button" data-chase="request" title="Post a roll button for the player"><i class="fa-solid fa-comment-dots"></i> Ask player</button>`;
       const roll = `<button type="button" data-chase="roll"><i class="fa-solid fa-dice-d20"></i> ${playerOwned(current.id) ? 'Roll for them' : 'Roll'}</button>`;
-      turn += `<div class="mvpc-row">${bonusSelect()}
-        ${shootingControls(weapons)}
-        <label>Use instead <input type="text" name="useInstead" list="mvpc-chase-checks" placeholder="e.g. DEX" style="width:8em"></label></div>
-        <div class="mvpc-row">${playerOwned(current.id) ? ask + roll : roll + ask}
+      turn += `${rollOptions(weapons, true)}
+        <div class="mvpc-row mvpc-actions">${playerOwned(current.id) ? ask + roll : roll + ask}
         <button type="button" data-chase="pass">Passed</button><button type="button" data-chase="fail">Failed</button>
         <button type="button" data-chase="skip" title="Does something else this turn">Skip</button></div>`;
     }
@@ -480,7 +504,12 @@ export function renderTracker(
   }
 
   if (state.log.length) {
-    parts.push(`<h3>Log</h3><ol class="mvpc-log">${state.log.slice(-12).map(l => `<li>${esc(l)}</li>`).join('')}</ol>`);
+    parts.push(
+      `<details class="mvpc-log-box"${sheet.logOpen ? ' open' : ''}><summary>Log (${String(Math.min(state.log.length, 12))})</summary><ol class="mvpc-log">${state.log
+        .slice(-12)
+        .map(l => `<li>${esc(l)}</li>`)
+        .join('')}</ol></details>`
+    );
   }
 
   if (isGM) {
