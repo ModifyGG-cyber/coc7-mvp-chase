@@ -151,7 +151,7 @@ function actorOf(p: ChaseParticipant): ActorLike {
 export function checkFromRef(ref: Coc7ChaseCheckRef): ChaseCheck {
   const kind = ref.kind as string;
   const name = (ref.name as string | undefined)?.trim() ?? '';
-  if (!name) throw new Error('A challenge needs a name, e.g. Athletics or dex');
+  if (!name) throw new Error('A challenge needs a name, e.g. Climb or DEX');
   if (kind === 'characteristic') {
     if (!CHARACTERISTICS.includes(name.toLowerCase())) throw new Error(`characteristic must be one of ${CHARACTERISTICS.join(', ')}`);
     return { kind: 'characteristic', name: name.toLowerCase() };

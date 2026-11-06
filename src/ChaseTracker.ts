@@ -3,6 +3,7 @@
  * at runtime, so this file only touches Foundry globals when the window is opened.
  */
 
+import { attachSuggestions } from './SuggestBox';
 import type { Coc7ChaseCheckRef, Coc7Difficulty } from './types';
 import {
   addToChase,
@@ -38,6 +39,7 @@ import {
   removeParticipant,
   skipTurn,
   stepLocation,
+  removeLocation,
   type ChaseCheck,
   type ChaseState
 } from './chaseState';
@@ -99,7 +101,8 @@ function trackerClass(): AppV2Class {
     };
 
     private busy = false;
-    private listening = false;
+    /** The element the listeners are on: Foundry builds a new one when the window is closed and reopened. */
+    private listeningOn: HTMLElement | null = null;
     private logOpen = false;
 
     _renderHTML(): Promise<string> {
@@ -118,9 +121,14 @@ function trackerClass(): AppV2Class {
     }
 
     _replaceHTML(result: string, content: HTMLElement): void {
+      const scroll = content.scrollTop;
       content.innerHTML = result;
-      if (!this.listening) {
-        this.listening = true;
+      content.scrollTop = scroll;
+      if (this.listeningOn !== content) {
+        this.listeningOn = content;
+        attachSuggestions(content, () =>
+          Array.from(content.querySelectorAll<HTMLOptionElement>('#mvpc-chase-checks option')).map(o => o.value)
+        );
         content.addEventListener('click', event => void this.onClick(event));
         content.addEventListener('change', event => void this.onChange(event));
         content.addEventListener(
@@ -138,11 +146,19 @@ function trackerClass(): AppV2Class {
       if (this.busy) return;
       this.busy = true;
       this.element.classList.add('mvpc-busy');
+      // Never leave the tracker locked: a roll waiting on a dialog that was closed elsewhere gives up after 30 s.
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timeout = new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => {
+          reject(new Error('That took too long, so the tracker is unlocked again. Check chat before trying it again.'));
+        }, 30_000);
+      });
       try {
-        await work();
+        await Promise.race([work(), timeout]);
       } catch (error) {
         g().ui.notifications?.error(error instanceof Error ? error.message : String(error));
       } finally {
+        if (timer) clearTimeout(timer);
         this.busy = false;
         this.element.classList.remove('mvpc-busy');
         void this.render();
@@ -276,6 +292,21 @@ function trackerClass(): AppV2Class {
           if (!ok) return;
           return this.run(() => restartChase());
         }
+        case 'remove-location': {
+          const index = parseInt(target.dataset['loc'] ?? '', 10);
+          if (!index) return;
+          const dialog = g().foundry.applications.api.DialogV2;
+          const ok = dialog
+            ? await dialog.confirm({ window: { title: 'Remove location' }, content: `<p>Remove Location ${String(index)}? The locations after it move down a number. Undo puts it back.</p>` })
+            : true;
+          if (!ok) return;
+          return this.run(() =>
+            mutateChase(state => {
+              removeLocation(state, index);
+              return undefined;
+            })
+          );
+        }
         case 'loc-back':
         case 'loc-forward':
           if (!pid) return;
@@ -366,7 +397,7 @@ export function refreshChaseTracker(): void {
 // ---------- HTML ----------
 
 const STYLE = `<style>
-.mvpc-chase .window-content{padding:8px}
+.mvpc-chase .window-content{padding:8px;max-height:calc(100vh - 120px);overflow-y:auto}
 .mvpc-chase.mvpc-busy .window-content{opacity:.6;pointer-events:none}
 .mvpc-chase h3{margin:6px 0 4px;font-size:1.05em;border-bottom:1px solid var(--color-border-light-2,#7a7971);}
 .mvpc-chase table{width:100%;border-collapse:collapse;margin:0 0 6px}
@@ -392,6 +423,7 @@ const STYLE = `<style>
 .mvpc-chase .mvpc-hint{font-size:.85em;opacity:.8}
 .mvpc-chase .mvpc-step{display:inline-flex;align-items:center;gap:2px;white-space:nowrap}
 .mvpc-chase .mvpc-step button{padding:0 4px;line-height:20px;min-width:0}
+.mvpc-chase .mvpc-icon{padding:0 5px;line-height:20px;min-width:0}
 .mvpc-chase .mvpc-picker{border-bottom:1px solid var(--color-border-light-2,#7a7971);padding-bottom:6px}
 .mvpc-chase .mvpc-picker select{width:auto;max-width:22em}
 .mvpc-chase .mvpc-pair{display:flex;gap:4px;align-items:center}
@@ -415,7 +447,7 @@ function bonusSelect(): string {
 function rollOptions(weapons: { id: string; name: string }[], withCheck: boolean): string {
   const dice = `<span class="mvpc-opt-label">Dice</span><div class="mvpc-opt">${bonusSelect()}<span class="mvpc-sep"></span>${shootingControls(weapons)}</div>`;
   const check = withCheck
-    ? `<span class="mvpc-opt-label">Use instead</span><div class="mvpc-opt"><input type="text" name="useInstead" list="mvpc-chase-checks" placeholder="e.g. Social or DEX" style="width:11em"><span class="mvpc-hint">Blank uses the location's challenge</span></div>`
+    ? `<span class="mvpc-opt-label">Use instead</span><div class="mvpc-opt"><input type="text" name="useInstead" data-suggest="1" autocomplete="off" placeholder="e.g. Dodge or DEX" style="width:11em"><span class="mvpc-hint">Blank uses the location's challenge</span></div>`
     : '';
   return `<div class="mvpc-opts">${dice}${check}</div>`;
 }
@@ -505,12 +537,13 @@ export function renderTracker(
     .map(l =>
       isGM
         ? `<tr><td>${String(l.index)}</td><td><input type="text" value="${esc(l.name)}" data-loc="${String(l.index)}" data-field="name"></td>
-          <td><div class="mvpc-pair"><input type="text" list="mvpc-chase-checks" placeholder="e.g. Athletics" value="${esc(challengeText(l.check))}" data-loc="${String(l.index)}" data-field="check"><span>or</span><input type="text" list="mvpc-chase-checks" placeholder="(optional)" title="A second way through: the player picks which to roll" value="${esc(challengeText(l.alt ?? null))}" data-loc="${String(l.index)}" data-field="alt"></div></td>
-          <td><select data-loc="${String(l.index)}" data-field="difficulty">${options(DIFFICULTIES, l.difficulty)}</select></td><td>${occupants(l.index)}</td></tr>`
+          <td><div class="mvpc-pair"><input type="text" data-suggest="1" autocomplete="off" placeholder="e.g. Climb" value="${esc(challengeText(l.check))}" data-loc="${String(l.index)}" data-field="check"><span>or</span><input type="text" data-suggest="1" autocomplete="off" placeholder="(optional)" title="A second way through: the player picks which to roll" value="${esc(challengeText(l.alt ?? null))}" data-loc="${String(l.index)}" data-field="alt"></div></td>
+          <td><select data-loc="${String(l.index)}" data-field="difficulty">${options(DIFFICULTIES, l.difficulty)}</select></td><td>${occupants(l.index)}</td>
+          <td>${locs.length > 1 && !state.outcome ? `<button type="button" class="mvpc-icon" data-chase="remove-location" data-loc="${String(l.index)}" title="Remove this location"><i class="fa-solid fa-xmark"></i></button>` : ''}</td></tr>`
         : `<tr><td>${String(l.index)}</td><td>${esc(l.name)}</td><td>${esc(challengeLabel(l) ?? '—')}</td><td></td><td>${occupants(l.index)}</td></tr>`
     )
     .join('');
-  parts.push(`<h3>Locations</h3><table class="mvpc-locs"><thead><tr><th>#</th><th>Name</th><th>Challenge</th><th>Difficulty</th><th>Here now</th></tr></thead><tbody>${locRows}</tbody></table>`);
+  parts.push(`<h3>Locations</h3><table class="mvpc-locs"><thead><tr><th>#</th><th>Name</th><th>Challenge</th><th>Difficulty</th><th>Here now</th><th></th></tr></thead><tbody>${locRows}</tbody></table>`);
   if (isGM && !state.outcome) {
     parts.push(`<div class="mvpc-row"><button type="button" data-chase="add-location"><i class="fa-solid fa-plus"></i> Add location</button><span class="mvpc-hint">New locations also appear by themselves when someone reaches them.</span></div>`);
   }
@@ -534,7 +567,7 @@ export function renderTracker(
       turn += `<div class="mvpc-row">Waiting for ${esc(name(aw.participantId))} to ${aw.pushed ? 'push' : 'roll'} ${esc([aw.check, ...(aw.alt ? [aw.alt] : [])].map(c => checkLabel(c, aw.difficulty)).join(' or '))}${aw.bonusDice ? ` (${aw.bonusDice > 0 ? '+' : ''}${String(aw.bonusDice)} dice)` : ''} from the button in chat…</div>`;
       if (isGM) {
         turn += `${aw.pushed ? '' : rollOptions(weapons, true)}
-          <div class="mvpc-row mvpc-actions"><button type="button" data-chase="request" title="Post the roll button again${aw.pushed ? '' : ' with these dice and check'}"><i class="fa-solid fa-comment-dots"></i> Ask again</button><button type="button" data-chase="roll">Roll it for them</button><button type="button" data-chase="pass">Passed</button><button type="button" data-chase="fail">Failed</button>${aw.pushed ? '' : '<button type="button" data-chase="skip" title="Does something else this turn">Skip</button>'}</div>`;
+          <div class="mvpc-row mvpc-actions"><button type="button" data-chase="request" title="Post the roll button again${aw.pushed ? '' : ' with these dice and check'}"><i class="fa-solid fa-comment-dots"></i> Ask again</button>${aw.alt && !aw.pushed ? `<button type="button" data-chase="roll">Roll ${esc(challengeText(aw.check))} for them</button><button type="button" data-chase="roll" data-alt="1">Roll ${esc(challengeText(aw.alt))} for them</button>` : '<button type="button" data-chase="roll">Roll it for them</button>'}<button type="button" data-chase="pass">Passed</button><button type="button" data-chase="fail">Failed</button>${aw.pushed ? '' : '<button type="button" data-chase="skip" title="Does something else this turn">Skip</button>'}</div>`;
       }
     } else if (isGM) {
       const ask = `<button type="button" data-chase="request" title="Post a roll button for the player"><i class="fa-solid fa-comment-dots"></i> Ask player</button>`;
