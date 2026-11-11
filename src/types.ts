@@ -32,7 +32,7 @@ export interface Coc7ChaseView {
   pending?: { participant: string; total: number; target: number; luckNeeded: number | null; canPush: boolean } | null;
   awaiting?: { participant: string; challenge: string } | null;
   participants?: { id: string; name: string; side: string; mvp: number; mov: number; location: number; status: string; dex: number; nextPenaltyDice: number }[];
-  locations?: { index: number; name: string; challenge: string | null }[];
+  locations?: { index: number; name: string; obstacle?: string; challenge: string | null }[];
   order?: string[];
   log?: string[];
 }

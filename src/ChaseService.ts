@@ -23,6 +23,10 @@ import {
   findParticipant,
   getParticipant,
   locationLabel,
+  MAX_POOL,
+  isRevealed,
+  markReached,
+  publicLocationLabel,
   luckSuccess,
   recordRoll,
   requireCurrent,
@@ -75,6 +79,7 @@ export function loadChase(): ChaseState | null {
 }
 
 async function saveChase(state: ChaseState | null): Promise<void> {
+  if (state) markReached(state, isPlayerControlled);
   await globals().game.settings.set(CHASE_MODULE_ID, CHASE_SETTING, state);
 }
 
@@ -200,11 +205,24 @@ function valueText(actor: ActorLike, challenge: { check: ChaseCheck; difficulty:
 
 // ---------- chat ----------
 
+/** Where a character is, as the players may see it: the name and obstacle only once a player's character has got there. */
+function placeText(state: ChaseState, index: number): string {
+  markReached(state, isPlayerControlled);
+  const label = publicLocationLabel(state, index);
+  const obstacle = isRevealed(state, index) ? state.locations.find(l => l.index === index)?.obstacle : undefined;
+  return obstacle ? `${label}: ${obstacle}` : label;
+}
+
 async function post(state: ChaseState, html: string, options: { whisperGM?: boolean; flags?: Record<string, unknown> } = {}): Promise<void> {
+  markReached(state, isPlayerControlled);
+  await postCard(state.name, html, options);
+}
+
+async function postCard(chaseName: string, html: string, options: { whisperGM?: boolean; flags?: Record<string, unknown> } = {}): Promise<void> {
   const { ChatMessage } = getCoc7Globals();
   const whisper = options.whisperGM ? ChatMessage.getWhisperRecipients?.('GM').map(u => u.id) : undefined;
   await ChatMessage.create({
-    content: `<div class="mvpc-chase-card"><h4>🏃 ${escapeHtml(state.name)}</h4>${html}</div>`,
+    content: `<div class="mvpc-chase-card"><h4>🏃 ${escapeHtml(chaseName)}</h4>${html}</div>`,
     speaker: { alias: 'Chase' },
     ...(whisper?.length ? { whisper } : {}),
     ...(options.flags ? { flags: { [CHASE_MODULE_ID]: options.flags } } : {})
@@ -255,7 +273,8 @@ async function requestRoll(
   state: ChaseState,
   p: ChaseParticipant,
   challenge: { check: ChaseCheck; alt?: ChaseCheck | null; difficulty: Coc7Difficulty; bonusDice: number },
-  pushed: boolean
+  pushed: boolean,
+  options: { weaponId?: string } = {}
 ): Promise<void> {
   const alt = pushed ? null : (challenge.alt ?? null);
   state.awaiting = { participantId: p.id, check: challenge.check, alt, difficulty: challenge.difficulty, bonusDice: challenge.bonusDice, pushed };
@@ -263,7 +282,7 @@ async function requestRoll(
   const checks = alt ? [challenge.check, alt] : [challenge.check];
   const labels = checks.map(c => checkLabel(c, challenge.difficulty));
   const what = pushed ? `Pushed ${escapeHtml(labels[0] ?? '')} roll` : `${escapeHtml(labels.join(' or '))} check`;
-  const where = `Location ${String(p.location)}${locationLabel(state, p.location) !== `Location ${String(p.location)}` ? ` (${escapeHtml(locationLabel(state, p.location))})` : ''}`;
+  const where = escapeHtml(placeText(state, p.location));
   let values = '';
   try {
     const actor = actorOf(p);
@@ -274,9 +293,16 @@ async function requestRoll(
   const buttons = checks
     .map((_c, i) => `<button type="button" data-mvpc-roll="${String(i)}"><i class="fa-solid fa-dice-d20"></i> Roll ${escapeHtml(labels[i] ?? '')}</button>`)
     .join('');
+  // A character with a gun may shoot while running: the player picks the weapon here and gets the attack card.
+  const weapons = pushed ? [] : rangedWeapons(p);
+  const shoot = weapons.length
+    ? `<label class="mvpc-shoot" data-mvpc-shoot style="display:flex;gap:6px;align-items:center;margin:4px 0" title="The attack and this check each take a penalty die">Shoot while running <select data-mvpc-weapon><option value="">No</option>${weapons
+        .map(w => `<option value="${escapeHtml(w.id)}"${w.id === options.weaponId ? ' selected' : ''}>${escapeHtml(w.name)}</option>`)
+        .join('')}</select></label>`
+    : '';
   await post(
     state,
-    `<p>${what} for <b>${escapeHtml(p.name)}</b> at ${where}${pushed ? '. Failing a pushed roll means out of the chase' : alt ? '. Pick one' : ''}:</p>${values}<div class="mvpc-choices">${buttons}</div>`,
+    `<p>${what} for <b>${escapeHtml(p.name)}</b> at ${where}${pushed ? '. Failing a pushed roll means out of the chase' : alt ? '. Pick one' : ''}:</p>${values}${shoot}<div class="mvpc-choices">${buttons}</div>`,
     {
       flags: {
         roll: {
@@ -285,7 +311,8 @@ async function requestRoll(
           actorUuid: p.actorUuid,
           checks: checks.map(c => ({ kind: c.kind, name: c.name })),
           difficulty: challenge.difficulty,
-          bonusDice: challenge.bonusDice
+          bonusDice: challenge.bonusDice,
+          chaseName: state.name
         }
       }
     }
@@ -311,10 +338,11 @@ export function escapeHtml(text: string): string {
 }
 
 function standings(state: ChaseState): string {
+  markReached(state, isPlayerControlled);
   const rows = state.participants
     .map(p => {
       const status = p.status === 'active' ? `${String(p.mvp)} MvP` : p.status;
-      return `<li><b>${escapeHtml(p.name)}</b> (${p.side}) · ${escapeHtml(locationLabel(state, p.location))} · ${status}</li>`;
+      return `<li><b>${escapeHtml(p.name)}</b> (${p.side}) · ${escapeHtml(publicLocationLabel(state, p.location))} · ${status}</li>`;
     })
     .join('');
   return `<ul class="mvpc-chase-standings">${rows}</ul>`;
@@ -324,9 +352,11 @@ function nextUp(state: ChaseState): string {
   if (state.outcome) return `<p class="mvpc-chase-outcome"><b>${escapeHtml(state.outcome)}</b></p>`;
   const p = currentParticipant(state);
   if (!p) return '';
+  markReached(state, isPlayerControlled);
+  if (!isRevealed(state, p.location)) return `<p>Next: <b>${escapeHtml(p.name)}</b> in Location ${String(p.location)}.</p>`;
   const loc = state.locations.find(l => l.index === p.location);
-  const challenge = loc?.check ? checkLabel(loc.check, loc.difficulty) : 'challenge not set yet';
-  return `<p>Next: <b>${escapeHtml(p.name)}</b> in ${escapeHtml(locationLabel(state, p.location))}: ${escapeHtml(challenge)}.</p>`;
+  const challenge = loc?.check ? challengeLabel(loc) ?? '' : 'challenge not set yet';
+  return `<p>Next: <b>${escapeHtml(p.name)}</b> in ${escapeHtml(placeText(state, p.location))}. Challenge: ${escapeHtml(challenge)}.</p>`;
 }
 
 // ---------- views ----------
@@ -371,7 +401,7 @@ export function viewOf(state: ChaseState | null): Coc7ChaseView {
       dex: p.dex,
       nextPenaltyDice: p.nextPenaltyDice
     })),
-    locations: state.locations.map(l => ({ index: l.index, name: l.name, challenge: challengeLabel(l) })),
+    locations: state.locations.map(l => ({ index: l.index, name: l.name, ...(l.obstacle ? { obstacle: l.obstacle } : {}), challenge: challengeLabel(l) })),
     order: state.order.slice(state.turn).map(name),
     log: state.log.slice(-12)
   };
@@ -443,13 +473,14 @@ export async function addToChase(ref: Coc7ChaseActorRef, side: ChaseSide): Promi
 
 export async function updateLocation(
   index: number,
-  update: { name?: string; check?: Coc7ChaseCheckRef | null; alt?: Coc7ChaseCheckRef | null; difficulty?: Coc7Difficulty }
+  update: { name?: string; obstacle?: string; check?: Coc7ChaseCheckRef | null; alt?: Coc7ChaseCheckRef | null; difficulty?: Coc7Difficulty }
 ): Promise<Coc7ChaseView> {
   requireGM();
   const state = requireChase();
   const difficulty = checkDifficulty(update.difficulty);
   setLocation(state, index, {
     ...(update.name !== undefined ? { name: update.name } : {}),
+    ...(update.obstacle !== undefined ? { obstacle: update.obstacle } : {}),
     ...(update.check !== undefined ? { check: update.check ? checkFromRef(update.check) : null } : {}),
     ...(update.alt !== undefined ? { alt: update.alt ? checkFromRef(update.alt) : null } : {}),
     ...(difficulty ? { difficulty } : {})
@@ -624,6 +655,8 @@ export interface RollFlag {
   checks: { kind: ChaseCheck['kind']; name: string }[];
   difficulty: Coc7Difficulty;
   bonusDice: number;
+  /** The chase's name, for the card the player's own shot posts. */
+  chaseName?: string;
 }
 
 const sameCheck = (a: { kind: string; name: string } | null | undefined, b: { kind: string; name: string } | null | undefined): boolean =>
@@ -643,7 +676,7 @@ export function rollButtonLive(flag: RollFlag, index = 0): boolean {
  * normal check card is posted and the Keeper's client resolves the turn from it. Unlike a CoC7 link,
  * it never asks which character, and the Keeper clicking it rolls rather than re-posting the request.
  */
-export async function rollFromButton(flag: RollFlag, index = 0): Promise<void> {
+export async function rollFromButton(flag: RollFlag, index = 0, weaponId = ''): Promise<void> {
   if (!rollButtonLive(flag, index)) throw new Error('This roll is no longer waiting. Use the newest roll button in chat.');
   const check = flag.checks[index];
   if (!check) throw new Error('This roll button has no check.');
@@ -651,7 +684,13 @@ export async function rollFromButton(flag: RollFlag, index = 0): Promise<void> {
   const actor = lookup?.(flag.actorUuid) as (ActorLike & { isOwner?: boolean }) | null | undefined;
   if (!actor) throw new Error('The character for this roll is gone.');
   if (actor.isOwner === false) throw new Error(`Only ${actor.name}'s player or the Keeper can roll this.`);
-  const options = { difficulty: DIFFICULTY_CODE[flag.difficulty], poolModifier: flag.bonusDice };
+  let pool = flag.bonusDice;
+  if (weaponId) {
+    // Shooting while running: the attack card opens for whoever clicked, and the chase check takes a penalty die.
+    await fireWeaponOf(actor, flag.actorUuid, weaponId, flag.chaseName ?? 'Chase');
+    pool = Math.max(-MAX_POOL, pool - 1);
+  }
+  const options = { difficulty: DIFFICULTY_CODE[flag.difficulty], poolModifier: pool };
   if (check.kind === 'skill') {
     const skill = findSkill(actor, check.name);
     if (!skill) throw new Error(`${actor.name} has no ${check.name} skill. The Keeper can roll it for them from the chase tracker.`);
@@ -665,7 +704,7 @@ export async function rollFromButton(flag: RollFlag, index = 0): Promise<void> {
 
 async function announceRoll(state: ChaseState, p: ChaseParticipant, outcome: 'moved' | 'pending' | 'out', roll: RollOutcome, check: string): Promise<void> {
   if (outcome === 'moved') {
-    await post(state, `<p><b>${escapeHtml(p.name)}</b> passes ${escapeHtml(check)} and moves on to ${escapeHtml(locationLabel(state, p.location))}. MvP stay at ${String(p.mvp)}.</p>${nextUp(state)}`);
+    await post(state, `<p><b>${escapeHtml(p.name)}</b> passes ${escapeHtml(check)} and moves on to ${escapeHtml(placeText(state, p.location))}. MvP stay at ${String(p.mvp)}.</p>${nextUp(state)}`);
   } else if (outcome === 'out') {
     await post(state, `<p><b>${escapeHtml(p.name)}</b> fails the pushed roll and is ${p.status === 'caught' ? '<b>caught</b>' : '<b>out of the chase</b>'}.</p>${standings(state)}${nextUp(state)}`);
   } else {
@@ -729,11 +768,15 @@ interface WeaponItem {
 /** The character's ranged weapons, for the Shooting option. */
 export function rangedWeapons(p: ChaseParticipant): { id: string; name: string }[] {
   try {
-    const items = actorOf(p).items.filter(i => i.type === 'weapon') as unknown as WeaponItem[];
-    return items.filter(i => i.system.properties?.rngd === true).map(i => ({ id: i.id, name: i.name }));
+    return rangedWeaponsOf(actorOf(p));
   } catch {
     return [];
   }
+}
+
+function rangedWeaponsOf(actor: ActorLike): { id: string; name: string }[] {
+  const items = actor.items.filter(i => i.type === 'weapon') as unknown as WeaponItem[];
+  return items.filter(i => i.system.properties?.rngd === true).map(i => ({ id: i.id, name: i.name }));
 }
 
 /**
@@ -741,10 +784,17 @@ export function rangedWeapons(p: ChaseParticipant): { id: string; name: string }
  * too, so the attack card is adjusted as it is created (each target's dice slider moves down one).
  */
 async function fireWeapon(state: ChaseState, p: ChaseParticipant, weaponId: string): Promise<void> {
-  const actor = actorOf(p);
+  await fireWeaponOf(actorOf(p), p.actorUuid, weaponId, state.name);
+}
+
+/**
+ * Fires on whichever client calls it: the Keeper's, or the player's own from their roll card, so the
+ * attack card opens for whoever is shooting.
+ */
+async function fireWeaponOf(actor: ActorLike, actorUuid: string, weaponId: string, chaseName: string): Promise<void> {
   if (!actor.weaponCheck) throw new Error('This CoC7 version cannot make weapon attacks from a module.');
-  const weapon = rangedWeapons(p).find(w => w.id === weaponId);
-  if (!weapon) throw new Error(`${p.name} has no ranged weapon with that id.`);
+  const weapon = rangedWeaponsOf(actor).find(w => w.id === weaponId);
+  if (!weapon) throw new Error(`${actor.name} has no ranged weapon with that id.`);
   const { Hooks } = getCoc7Globals();
   let hookId = 0;
   const timer: { id?: ReturnType<typeof setTimeout> } = {};
@@ -759,7 +809,7 @@ async function fireWeapon(state: ChaseState, p: ChaseParticipant, weaponId: stri
       updateSource?(data: Record<string, unknown>): void;
     };
     const load = message.flags?.CoC7?.load;
-    if (load?.as !== 'CoC7ChatCombatRanged' || load.actorUuid !== p.actorUuid) return;
+    if (load?.as !== 'CoC7ChatCombatRanged' || load.actorUuid !== actorUuid) return;
     done();
     const targets = (load.targets ?? []).map(t => ({ ...t, poolModifier: Math.max(-2, num(t.poolModifier) - 1) }));
     let i = 0;
@@ -777,7 +827,7 @@ async function fireWeapon(state: ChaseState, p: ChaseParticipant, weaponId: stri
     done();
     throw error;
   }
-  await post(state, `<p><b>${escapeHtml(p.name)}</b> shoots ${escapeHtml(weapon.name)} while running: a penalty die on the attack and on the chase check.</p>`);
+  await postCard(chaseName, `<p><b>${escapeHtml(actor.name)}</b> shoots ${escapeHtml(weapon.name)} while running: a penalty die on the attack and on the chase check.</p>`);
 }
 
 export async function takeTurn(input: TakeTurnInput): Promise<Coc7ChaseTurnResult> {
@@ -792,19 +842,21 @@ export async function takeTurn(input: TakeTurnInput): Promise<Coc7ChaseTurnResul
   if (!Number.isInteger(bonus) || bonus < -2 || bonus > 2) throw new Error('bonusDice must be an integer from -2 to 2');
   const difficulty = checkDifficulty(input.difficulty);
   const pushedAsk = state.awaiting?.participantId === p.id && state.awaiting.pushed ? state.awaiting : null;
+  const mode = input.mode ?? 'roll';
+  // Asking a player to shoot: they fire from their own roll card, which adds the penalty die then.
+  const playerShoots = mode === 'request' && Boolean(input.shooting && input.weaponId) && !pushedAsk;
   const challenge = pushedAsk ?? challengeFor(state, p, {
     bonusDice: bonus,
-    shooting: input.shooting ?? false,
+    shooting: (input.shooting ?? false) && !playerShoots,
     ...(input.useAlt ? { useAlt: true } : {}),
     ...(input.check ? { check: checkFromRef(input.check) } : {}),
     ...(difficulty ? { difficulty } : {})
   });
   const label = checkLabel(challenge.check, challenge.difficulty);
-  const mode = input.mode ?? 'roll';
-  if (input.shooting && input.weaponId && !pushedAsk) await fireWeapon(state, p, input.weaponId);
+  if (input.shooting && input.weaponId && !pushedAsk && !playerShoots) await fireWeapon(state, p, input.weaponId);
 
   if (mode === 'request') {
-    await requestRoll(state, p, challenge, pushedAsk !== null);
+    await requestRoll(state, p, challenge, pushedAsk !== null, playerShoots && input.weaponId ? { weaponId: input.weaponId } : {});
     return { ...viewOf(state), result: `Asked ${p.name} to roll ${label}. The turn resolves when their check card appears.` };
   }
 
@@ -870,7 +922,7 @@ export async function resolveFailure(action: 'take-loss' | 'luck' | 'push', fixe
     await saveChase(state);
     const text =
       change.outcome === 'moved'
-        ? `<p><b>${escapeHtml(p.name)}</b> loses ${String(loss)} MvP (${String(change.before)} → ${String(change.after)}) but stumbles through to ${escapeHtml(locationLabel(state, p.location))}.</p>`
+        ? `<p><b>${escapeHtml(p.name)}</b> loses ${String(loss)} MvP (${String(change.before)} → ${String(change.after)}) but stumbles through to ${escapeHtml(placeText(state, p.location))}.</p>`
         : `<p><b>${escapeHtml(p.name)}</b> loses ${String(loss)} MvP (${String(change.before)} → 0) and is ${change.outcome === 'caught' ? '<b>caught</b>' : '<b>out of the chase</b>'}.</p>${standings(state)}`;
     await post(state, `${text}${nextUp(state)}`);
     await autoPrompt(state);
@@ -886,7 +938,7 @@ export async function resolveFailure(action: 'take-loss' | 'luck' | 'push', fixe
     if (ok === false) throw new Error(`${p.name} could not spend ${String(pending.luckNeeded)} Luck.`);
     const spent = luckSuccess(state);
     await saveChase(state);
-    await post(state, `<p><b>${escapeHtml(p.name)}</b> spends ${String(spent)} Luck (${String(have)} → ${String(have - spent)}) to pass and moves on to ${escapeHtml(locationLabel(state, p.location))}.</p>${nextUp(state)}`);
+    await post(state, `<p><b>${escapeHtml(p.name)}</b> spends ${String(spent)} Luck (${String(have)} → ${String(have - spent)}) to pass and moves on to ${escapeHtml(placeText(state, p.location))}.</p>${nextUp(state)}`);
     await autoPrompt(state);
     return { ...viewOf(state), result: `${p.name} spent ${String(spent)} Luck and passed.` };
   }

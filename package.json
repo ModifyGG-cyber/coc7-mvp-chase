@@ -1,6 +1,6 @@
 {
   "name": "coc7-mvp-chase",
-  "version": "1.7.2",
+  "version": "1.8.0",
   "private": true,
   "description": "Call of Cthulhu 7e chases with the Keeper Companion's Movement Point (MvP) rules, for Foundry VTT",
   "type": "module",
