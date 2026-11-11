@@ -762,7 +762,7 @@ interface WeaponItem {
   id: string;
   name: string;
   type: string;
-  system: { properties?: { rngd?: boolean } };
+  system: { properties?: { rngd?: boolean }; skill?: { main?: { id?: string } }; bullets?: number | null; ammo?: number | null };
 }
 
 /** The character's ranged weapons, for the Shooting option. */
@@ -774,9 +774,20 @@ export function rangedWeapons(p: ChaseParticipant): { id: string; name: string }
   }
 }
 
+/**
+ * Ranged weapons the character can actually fire: CoC7 can only roll the attack when the weapon is
+ * linked to a skill on this sheet (otherwise its card shows "Roll (%)" and does nothing), so unlinked
+ * ones, such as a Bullwhip without Fighting (Whip), are left out. An empty gun is marked.
+ */
 function rangedWeaponsOf(actor: ActorLike): { id: string; name: string }[] {
   const items = actor.items.filter(i => i.type === 'weapon') as unknown as WeaponItem[];
-  return items.filter(i => i.system.properties?.rngd === true).map(i => ({ id: i.id, name: i.name }));
+  const skillIds = new Set(actor.items.filter(i => i.type === 'skill').map(i => (i as unknown as { id: string }).id));
+  return items
+    .filter(i => i.system.properties?.rngd === true && skillIds.has(i.system.skill?.main?.id ?? ''))
+    .map(i => {
+      const empty = typeof i.system.bullets === 'number' && i.system.bullets > 0 && i.system.ammo === 0;
+      return { id: i.id, name: empty ? `${i.name} (out of ammo)` : i.name };
+    });
 }
 
 /**
