@@ -26,6 +26,8 @@ export interface ChaseLocation {
   /** 1-based. Everyone starts in Location 1. */
   index: number;
   name: string;
+  /** What stands in the way here ("a locked gate"), shown with the location. */
+  obstacle?: string;
   /** The one challenge for this location; null until the Keeper picks it. */
   check: ChaseCheck | null;
   /** Optional second way through ("Athletics or Stealth"): the character picks which to roll. */
@@ -64,7 +66,7 @@ export interface ChasePending {
   target: number;
   /** Luck needed to turn it into a success; null when Luck can't be spent (pushed roll, Luck check). */
   luckNeeded: number | null;
-  /** A skill roll that hasn't been pushed yet. */
+  /** A skill or characteristic roll that hasn't been pushed yet (Luck can't be pushed). */
   canPush: boolean;
   pushed: boolean;
 }
@@ -97,6 +99,8 @@ export interface ChaseState {
   awaiting: ChaseAwaiting | null;
   /** Players roll their own checks and choose their own failure options. Missing = on. */
   promptPlayers?: boolean;
+  /** The furthest location a player's character has reached. Players don't see the names, obstacles or challenges of locations past it. Missing = 1. */
+  reached?: number;
   /** Earlier states for Undo, oldest first (each without its own history). */
   history?: ChaseState[];
   /** Set when the chase is over. */
@@ -267,11 +271,16 @@ export function ensureLocation(state: ChaseState, index: number): ChaseLocation 
 export function setLocation(
   state: ChaseState,
   index: number,
-  update: { name?: string; check?: ChaseCheck | null; alt?: ChaseCheck | null; difficulty?: Coc7Difficulty }
+  update: { name?: string; obstacle?: string; check?: ChaseCheck | null; alt?: ChaseCheck | null; difficulty?: Coc7Difficulty }
 ): ChaseLocation {
   if (!Number.isInteger(index) || index < 1) throw new Error('Location index must be 1 or more');
   const loc = ensureLocation(state, index);
   if (update.name !== undefined) loc.name = update.name.trim() || `Location ${String(index)}`;
+  if (update.obstacle !== undefined) {
+    const obstacle = update.obstacle.trim();
+    if (obstacle) loc.obstacle = obstacle;
+    else delete loc.obstacle;
+  }
   if (update.check !== undefined) loc.check = update.check;
   if (update.alt !== undefined) loc.alt = update.alt;
   if (update.difficulty !== undefined) loc.difficulty = update.difficulty;
@@ -298,6 +307,23 @@ export function removeLocation(state: ChaseState, index: number): void {
   }
   for (const p of state.participants) if (p.location > index) p.location -= 1;
   if (state.hardFrom !== null && state.hardFrom > index) state.hardFrom -= 1;
+  if (state.reached !== undefined && state.reached >= index) state.reached = Math.max(1, state.reached - 1);
+}
+
+/** True when players may see this location's name, obstacle and challenge: one of their characters has got that far. */
+export function isRevealed(state: ChaseState, index: number): boolean {
+  return index <= Math.max(1, state.reached ?? 1);
+}
+
+/** Notes how far the players' characters have got; locations up to there are revealed to the players. */
+export function markReached(state: ChaseState, playerOwned: (p: ChaseParticipant) => boolean): void {
+  const furthest = Math.max(1, state.reached ?? 1, ...state.participants.filter(playerOwned).map(p => p.location));
+  state.reached = furthest;
+}
+
+/** The location as players may see it: its name only once it's revealed. */
+export function publicLocationLabel(state: ChaseState, index: number): string {
+  return isRevealed(state, index) ? locationLabel(state, index) : `Location ${String(index)}`;
 }
 
 export function currentParticipant(state: ChaseState): ChaseParticipant | null {
@@ -417,7 +443,8 @@ export function recordRoll(
     total: roll.total,
     target: roll.target,
     luckNeeded: isLuckRoll || roll.target < 1 ? null : roll.total - roll.target,
-    canPush: roll.check.kind === 'skill',
+    // Skill and characteristic rolls can be pushed; Luck can't.
+    canPush: roll.check.kind !== 'attribute',
     pushed: false
   };
   log(state, `${p.name} fails ${label} (${String(roll.total)} vs ${String(roll.target)}).`);
@@ -460,7 +487,7 @@ export function luckSuccess(state: ChaseState): number {
 export function beginPush(state: ChaseState): ChasePending {
   const pending = state.pending;
   if (!pending) throw new Error('There is no failed challenge waiting.');
-  if (!pending.canPush) throw new Error('Only a skill roll can be pushed, and only once.');
+  if (!pending.canPush) throw new Error('Only a skill or characteristic roll can be pushed, and only once.');
   state.pending = null;
   return pending;
 }
@@ -561,6 +588,7 @@ export function resetChase(state: ChaseState, startMvp: (p: ChaseParticipant) =>
   state.pending = null;
   state.awaiting = null;
   state.outcome = null;
+  state.reached = 1;
   state.log = [];
   log(state, 'The Keeper reset the chase: everyone is back in Location 1 with full MvP.');
 }
@@ -574,7 +602,7 @@ export function stepLocation(state: ChaseState, id: string, delta: 1 | -1): Chas
   if (state.awaiting?.participantId === p.id) state.awaiting = null;
   p.location = to;
   ensureLocation(state, to);
-  log(state, `Keeper moves ${p.name} ${delta > 0 ? 'forward' : 'back'} to ${locationLabel(state, to)}.`);
+  log(state, `Keeper moves ${p.name} ${delta > 0 ? 'forward' : 'back'} to Location ${String(to)}.`);
   return p;
 }
 

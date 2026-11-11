@@ -40,6 +40,7 @@ import {
   skipTurn,
   stepLocation,
   removeLocation,
+  isRevealed,
   type ChaseCheck,
   type ChaseState
 } from './chaseState';
@@ -329,6 +330,7 @@ function trackerClass(): AppV2Class {
         const index = parseInt(loc, 10);
         const kind = input.dataset['field'];
         if (kind === 'name') return this.run(() => updateLocation(index, { name: input.value }));
+        if (kind === 'obstacle') return this.run(() => updateLocation(index, { obstacle: input.value }));
         if (kind === 'check') return this.run(() => updateLocation(index, { check: parseChallenge(input.value) }));
         if (kind === 'alt') return this.run(() => updateLocation(index, { alt: parseChallenge(input.value) }));
         if (kind === 'difficulty') return this.run(() => updateLocation(index, { difficulty: input.value as Coc7Difficulty }));
@@ -423,6 +425,8 @@ const STYLE = `<style>
 .mvpc-chase .mvpc-hint{font-size:.85em;opacity:.8}
 .mvpc-chase .mvpc-step{display:inline-flex;align-items:center;gap:2px;white-space:nowrap}
 .mvpc-chase .mvpc-step button{padding:0 4px;line-height:20px;min-width:0}
+.mvpc-chase .mvpc-stack{display:flex;flex-direction:column;gap:2px}
+.mvpc-chase .mvpc-hidden-loc{opacity:.6;font-size:.85em}
 .mvpc-chase .mvpc-icon{padding:0 5px;line-height:20px;min-width:0}
 .mvpc-chase .mvpc-picker{border-bottom:1px solid var(--color-border-light-2,#7a7971);padding-bottom:6px}
 .mvpc-chase .mvpc-picker select{width:auto;max-width:22em}
@@ -536,11 +540,13 @@ export function renderTracker(
   const locRows = locs
     .map(l =>
       isGM
-        ? `<tr><td>${String(l.index)}</td><td><input type="text" value="${esc(l.name)}" data-loc="${String(l.index)}" data-field="name"></td>
+        ? `<tr><td>${String(l.index)}${isRevealed(state, l.index) ? '' : ' <i class="fa-solid fa-eye-slash mvpc-hidden-loc" title="Players can\'t see this location yet"></i>'}</td><td><div class="mvpc-stack"><input type="text" value="${esc(l.name)}" data-loc="${String(l.index)}" data-field="name" title="Location name"><input type="text" value="${esc(l.obstacle ?? '')}" placeholder="Obstacle, e.g. a locked gate" data-loc="${String(l.index)}" data-field="obstacle" title="What's in the way here"></div></td>
           <td><div class="mvpc-pair"><input type="text" data-suggest="1" autocomplete="off" placeholder="e.g. Climb" value="${esc(challengeText(l.check))}" data-loc="${String(l.index)}" data-field="check"><span>or</span><input type="text" data-suggest="1" autocomplete="off" placeholder="(optional)" title="A second way through: the player picks which to roll" value="${esc(challengeText(l.alt ?? null))}" data-loc="${String(l.index)}" data-field="alt"></div></td>
           <td><select data-loc="${String(l.index)}" data-field="difficulty">${options(DIFFICULTIES, l.difficulty)}</select></td><td>${occupants(l.index)}</td>
           <td>${locs.length > 1 && !state.outcome ? `<button type="button" class="mvpc-icon" data-chase="remove-location" data-loc="${String(l.index)}" title="Remove this location"><i class="fa-solid fa-xmark"></i></button>` : ''}</td></tr>`
-        : `<tr><td>${String(l.index)}</td><td>${esc(l.name)}</td><td>${esc(challengeLabel(l) ?? '—')}</td><td></td><td>${occupants(l.index)}</td></tr>`
+        : isRevealed(state, l.index)
+          ? `<tr><td>${String(l.index)}</td><td>${esc(l.name)}${l.obstacle ? `<div class="mvpc-hint">${esc(l.obstacle)}</div>` : ''}</td><td>${esc(challengeLabel(l) ?? '—')}</td><td></td><td>${occupants(l.index)}</td></tr>`
+          : `<tr><td>${String(l.index)}</td><td>?</td><td>?</td><td></td><td>${occupants(l.index)}</td></tr>`
     )
     .join('');
   parts.push(`<h3>Locations</h3><table class="mvpc-locs"><thead><tr><th>#</th><th>Name</th><th>Challenge</th><th>Difficulty</th><th>Here now</th><th></th></tr></thead><tbody>${locRows}</tbody></table>`);
@@ -552,7 +558,11 @@ export function renderTracker(
   if (state.round > 0 && !state.outcome && current) {
     const loc = state.locations.find(l => l.index === current.location);
     const challenge = loc?.check ? checkLabel(loc.check, loc.difficulty) : 'no challenge set';
-    let turn = `<div class="mvpc-turn"><div><b>${esc(current.name)}</b>'s turn in ${esc(locationLabel(state, current.location))}: <b>${esc(challenge)}</b>${current.nextPenaltyDice ? ` with ${String(current.nextPenaltyDice)} penalty die` : ''}.</div>`;
+    const place = `${locationLabel(state, current.location)}${loc?.obstacle ? ` (${loc.obstacle})` : ''}`;
+    let turn =
+      isGM || isRevealed(state, current.location)
+        ? `<div class="mvpc-turn"><div><b>${esc(current.name)}</b>'s turn in ${esc(place)}: <b>${esc(challenge)}</b>${current.nextPenaltyDice ? ` with ${String(current.nextPenaltyDice)} penalty die` : ''}.</div>`
+        : `<div class="mvpc-turn"><div><b>${esc(current.name)}</b>'s turn in Location ${String(current.location)}.</div>`;
     const prompting = state.promptPlayers !== false && playerOwned(current.id);
     if (state.pending) {
       const pend = state.pending;
@@ -588,7 +598,8 @@ export function renderTracker(
     parts.push(`<div class="mvpc-row"><label><input type="checkbox" data-field="promptPlayers"${state.promptPlayers !== false ? ' checked' : ''}> Players roll their own checks and 1D6, and choose Luck or push</label></div>`);
   }
 
-  if (state.log.length) {
+  // The log names challenges at locations the players haven't reached, so it's the Keeper's only.
+  if (isGM && state.log.length) {
     parts.push(
       `<details class="mvpc-log-box"${sheet.logOpen ? ' open' : ''}><summary>Log (${String(Math.min(state.log.length, 12))})</summary><ol class="mvpc-log">${state.log
         .slice(-12)

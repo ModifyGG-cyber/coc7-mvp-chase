@@ -4,7 +4,7 @@
  */
 
 import { escapeHtml as esc } from './ChaseService';
-import { challengeLabel, currentParticipant, type ChaseState } from './chaseState';
+import { challengeLabel, currentParticipant, isRevealed, type ChaseState } from './chaseState';
 
 const STRIP_ID = 'mvpc-strip';
 const FOLD_KEY = 'mvpc-strip-folded';
@@ -21,6 +21,8 @@ const STYLE = `<style>
 #${STRIP_ID} .mvpc-s-loc{min-width:92px;max-width:150px;flex:0 0 auto;border:1px solid rgba(255,255,255,.18);border-radius:6px;padding:3px 4px;background:rgba(255,255,255,.04)}
 #${STRIP_ID} .mvpc-s-loc.mvpc-s-out{border-style:dashed;opacity:.8}
 #${STRIP_ID} .mvpc-s-name{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#${STRIP_ID} .mvpc-s-obst{font-size:11px;font-style:italic;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#${STRIP_ID} .mvpc-s-loc.mvpc-s-unknown{opacity:.7}
 #${STRIP_ID} .mvpc-s-check{font-size:11px;opacity:.75;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 #${STRIP_ID} .mvpc-s-chips{display:flex;flex-wrap:wrap;gap:3px;margin-top:3px;min-height:34px}
 #${STRIP_ID} .mvpc-s-chip{position:relative;width:32px;height:32px}
@@ -35,7 +37,7 @@ const STYLE = `<style>
 const FALLBACK_IMG = 'icons/svg/mystery-man.svg';
 
 /** The strip's HTML, or '' when no chase is under way (not started yet, or ended). */
-export function renderStrip(state: ChaseState | null, folded = false): string {
+export function renderStrip(state: ChaseState | null, folded = false, isGM = false): string {
   if (!state || state.round === 0 || state.outcome) return '';
   const current = currentParticipant(state);
   const last = Math.max(1, ...state.locations.map(l => l.index), ...state.participants.map(p => p.location));
@@ -52,10 +54,12 @@ export function renderStrip(state: ChaseState | null, folded = false): string {
   for (let i = 1; i <= last; i++) {
     const loc = state.locations.find(l => l.index === i);
     const here = state.participants.filter(p => p.location === i && p.status === 'active');
-    const name = loc && loc.name !== `Location ${String(i)}` ? `${String(i)}. ${loc.name}` : `Location ${String(i)}`;
-    const check = loc ? (challengeLabel(loc) ?? '') : '';
+    const shown = isGM || isRevealed(state, i);
+    const name = shown && loc && loc.name !== `Location ${String(i)}` ? `${String(i)}. ${loc.name}` : `Location ${String(i)}`;
+    const obstacle = shown ? (loc?.obstacle ?? '') : '?';
+    const check = shown && loc ? (challengeLabel(loc) ?? '') : '';
     columns.push(
-      `<div class="mvpc-s-loc"><div class="mvpc-s-name" title="${esc(name)}">${esc(name)}</div><div class="mvpc-s-check" title="${esc(check)}">${esc(check)}</div><div class="mvpc-s-chips">${here.map(p => chip(p.id)).join('')}</div></div>`
+      `<div class="mvpc-s-loc${shown ? '' : ' mvpc-s-unknown'}"><div class="mvpc-s-name" title="${esc(name)}">${esc(name)}</div>${obstacle ? `<div class="mvpc-s-obst" title="${esc(obstacle)}">${esc(obstacle)}</div>` : ''}<div class="mvpc-s-check" title="${esc(check)}">${esc(check)}</div><div class="mvpc-s-chips">${here.map(p => chip(p.id)).join('')}</div></div>`
     );
   }
   const gone = state.participants.filter(p => p.status !== 'active');
@@ -161,7 +165,8 @@ export function refreshStrip(state: ChaseState | null): void {
   const doc = (globalThis as { document?: Document }).document;
   if (!doc?.body) return;
   let el = doc.getElementById(STRIP_ID);
-  const html = renderStrip(state, folded());
+  const isGM = (globalThis as { game?: { user?: { isGM?: boolean } | null } }).game?.user?.isGM === true;
+  const html = renderStrip(state, folded(), isGM);
   if (!html) {
     el?.remove();
     return;

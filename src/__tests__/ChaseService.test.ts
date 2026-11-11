@@ -32,7 +32,7 @@ function rollQueue(n: number): number {
 }
 
 function makeActor(id: string, opts: { dex: number; mov: number; luck?: number; skills?: Record<string, number>; wounded?: boolean }): FakeActor {
-  const skills = Object.entries(opts.skills ?? {}).map(([name, value]) => ({ type: 'skill', name, system: { value } }));
+  const skills = Object.entries(opts.skills ?? {}).map(([name, value]) => ({ id: `sk-${name}`, type: 'skill', name, system: { value } }));
   const actor: FakeActor = {
     id,
     uuid: `Actor.${id}`,
@@ -274,11 +274,14 @@ test('players are asked to roll by default, roll their own 1D6, and can push', a
 });
 
 test('shooting fires the chosen weapon with a penalty die on its attack card, and suggestions come from the sheets', async () => {
-  const shooter = makeActor('shooter', { dex: 60, mov: 8, skills: { Athletics: 50, Social: 40 } });
-  const pistol = { id: 'w1', name: '.38 Revolver', type: 'weapon', system: { properties: { rngd: true } } };
+  const shooter = makeActor('shooter', { dex: 60, mov: 8, skills: { Athletics: 50, Social: 40, 'Firearms (Handgun)': 45 } });
+  const pistol = { id: 'w1', name: '.38 Revolver', type: 'weapon', system: { properties: { rngd: true }, skill: { main: { id: 'sk-Firearms (Handgun)' } }, bullets: 6, ammo: 6 } };
   const knife = { id: 'w2', name: 'Knife', type: 'weapon', system: { properties: { rngd: false } } };
+  // CoC7 can't roll a weapon that isn't linked to a skill on the sheet, so it isn't offered.
+  const whip = { id: 'w3', name: 'Bullwhip', type: 'weapon', system: { properties: { rngd: true }, skill: { main: { id: '' } } } };
+  const rifle = { id: 'w4', name: 'Rifle', type: 'weapon', system: { properties: { rngd: true }, skill: { main: { id: 'sk-Firearms (Handgun)' } }, bullets: 5, ammo: 0 } };
   const baseFilter = shooter.items.filter;
-  shooter.items = { filter: fn => [...baseFilter(fn), ...[pistol, knife].filter(fn as (i: unknown) => boolean)] };
+  shooter.items = { filter: fn => [...baseFilter(fn), ...[pistol, knife, whip, rifle].filter(fn as (i: unknown) => boolean)] };
   let created: { flags: unknown; content: string } | undefined;
   Object.assign(shooter, {
     weaponCheck: jest.fn(() => {
@@ -300,10 +303,13 @@ test('shooting fires the chosen weapon with a penalty die on its attack card, an
   const { participantSkillNames, rangedWeapons } = await import('../ChaseService');
   const { loadChase } = await import('../ChaseService');
   const state = loadChase();
-  expect(participantSkillNames(state)).toEqual(['Athletics', 'Social']);
+  expect(participantSkillNames(state)).toEqual(['Athletics', 'Firearms (Handgun)', 'Social']);
   const p = state?.participants.find(x => x.id === 'shooter');
   if (!p) throw new Error('no shooter');
-  expect(rangedWeapons(p)).toEqual([{ id: 'w1', name: '.38 Revolver' }]);
+  expect(rangedWeapons(p)).toEqual([
+    { id: 'w1', name: '.38 Revolver' },
+    { id: 'w4', name: 'Rifle (out of ammo)' }
+  ]);
 
   nextRolls = [20];
   await takeTurn({}); // mark
@@ -379,4 +385,47 @@ test('undo puts the chase back a step, and a location can offer two challenges',
   // The Keeper rolls the NPC's alternative.
   nextRolls = [];
   await expect(takeTurn({ useAlt: true, mode: 'pass' })).resolves.toMatchObject({ roll: { check: 'Stealth', passed: true } });
+});
+
+test("a player's character shoots from their own roll card, and the Keeper's Ask player leaves the shot to them", async () => {
+  const inv = Object.assign(makeActor('inv', { dex: 60, mov: 8, skills: { 'Firearms (Handgun)': 40 } }), { hasPlayerOwner: true, isOwner: true });
+  const pistol = { id: 'w1', name: '.38 Revolver', type: 'weapon', system: { properties: { rngd: true }, skill: { main: { id: 'sk-Firearms (Handgun)' } } } };
+  const baseFilter = inv.items.filter;
+  inv.items = { filter: fn => [...baseFilter(fn), ...[pistol].filter(fn as (i: unknown) => boolean)] };
+  const weaponCheck = jest.fn(() => {
+    const message = { flags: { CoC7: { load: { as: 'CoC7ChatCombatRanged', actorUuid: 'Actor.inv', targets: [] } } }, content: '', updateSource: jest.fn() };
+    for (const fn of hooks['preCreateChatMessage']?.values() ?? []) fn(message);
+    return Promise.resolve();
+  });
+  Object.assign(inv, { weaponCheck });
+  actors.set('inv', inv);
+  actors.set('mark', makeActor('mark', { dex: 40, mov: 7 }));
+  Object.assign(globalThis, { fromUuidSync: (uuid: string) => (uuid === 'Actor.inv' ? inv : null) });
+  // The investigator chases: the mark goes first, then the player is asked.
+  await startNewChase({ quarry: [{ actorId: 'mark' }], pursuers: [{ actorId: 'inv' }], firstCheck: { kind: 'characteristic', name: 'dex' } });
+  nextRolls = [20];
+  await takeTurn({});
+  const card = chat.at(-1);
+  expect(card?.content).toContain('Shoot while running');
+  expect(card?.content).toContain('<option value="w1">.38 Revolver</option>');
+  const flag = card?.flags?.['coc7-mvp-chase']?.roll;
+  if (!flag) throw new Error('no roll flag');
+
+  // The Keeper asks again with Shooting ticked: nothing is fired on the Keeper's side, the card preselects the gun.
+  await takeTurn({ mode: 'request', shooting: true, weaponId: 'w1' });
+  expect(weaponCheck).not.toHaveBeenCalled();
+  expect(chat.at(-1)?.content).toContain('<option value="w1" selected>');
+  const asked = chat.at(-1)?.flags?.['coc7-mvp-chase']?.roll;
+  if (!asked) throw new Error('no roll flag');
+  expect(asked.bonusDice).toBe(0);
+
+  // The player rolls with the gun picked: their client fires it, and the chase check takes the penalty die.
+  nextRolls = [30];
+  await rollFromButton(asked, 0, 'w1');
+  expect(weaponCheck).toHaveBeenCalledWith({ id: 'w1' }, false);
+  expect(inv.characteristicCheck).toHaveBeenLastCalledWith('dex', true, { difficulty: '0', poolModifier: -1 });
+  expect(chat.some(c => c.content?.includes('<b>inv</b> shoots .38 Revolver while running'))).toBe(true);
+  // The Keeper's client resolves the turn from the player's check card.
+  expect(await handleCheckCard(checkCard('Actor.inv', 60, 3, 0, { pool: -1 }))).toBe(true);
+  expect(getChaseView().participants?.find(p => p.name === 'inv')?.location).toBe(2);
 });

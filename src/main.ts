@@ -92,6 +92,10 @@ function wireRollCard(message: { flags?: Record<string, Record<string, unknown> 
   if (!flag || !buttons.length) return;
   const actor = g().fromUuidSync?.(flag.actorUuid) ?? null;
   const mine = Boolean(g().game.user?.isGM) || actor?.isOwner === true;
+  const shoot = html.querySelector<HTMLElement>('[data-mvpc-shoot]');
+  const weapon = html.querySelector<HTMLSelectElement>('[data-mvpc-weapon]');
+  if (shoot && !mine) shoot.style.display = 'none';
+  if (weapon && !rollButtonLive(flag, 0) && !rollButtonLive(flag, 1)) weapon.disabled = true;
   for (const button of buttons) {
     const index = parseInt(button.dataset['mvpcRoll'] ?? '0', 10) || 0;
     if (!mine) {
@@ -106,9 +110,11 @@ function wireRollCard(message: { flags?: Record<string, Record<string, unknown> 
     button.addEventListener('click', event => {
       event.preventDefault();
       buttons.forEach(b => (b.disabled = true));
-      void rollFromButton(flag, index).catch((error: unknown) => {
+      if (weapon) weapon.disabled = true;
+      void rollFromButton(flag, index, weapon?.value ?? '').catch((error: unknown) => {
         g().ui.notifications?.warn(error instanceof Error ? error.message : String(error));
         buttons.forEach(b => (b.disabled = false));
+        if (weapon) weapon.disabled = false;
       });
     });
   }

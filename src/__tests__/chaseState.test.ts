@@ -12,6 +12,9 @@ import {
   recordRoll,
   removeParticipant,
   removeLocation,
+  isRevealed,
+  markReached,
+  publicLocationLabel,
   resetChase,
   setLocation,
   skipTurn,
@@ -153,14 +156,22 @@ describe('MvP chase rules', () => {
     expect(s.participants[0]?.mvp).toBe(8);
   });
 
-  test('characteristic rolls cannot be pushed', () => {
+  test('characteristic rolls can be pushed, Luck rolls cannot', () => {
     const s = createChase({ id: 'c' });
     addParticipant(s, person('Q', 'quarry', 60));
     addParticipant(s, person('P', 'pursuer', 50));
     startChase(s);
     setLocation(s, 1, { check: DEX });
     roll(s, 90, 60);
-    expect(() => beginPush(s)).toThrow(/Only a skill roll/);
+    expect(beginPush(s).canPush).toBe(true);
+
+    const l = createChase({ id: 'l' });
+    addParticipant(l, person('Q', 'quarry', 60));
+    addParticipant(l, person('P', 'pursuer', 50));
+    startChase(l);
+    setLocation(l, 1, { check: { kind: 'attribute', name: 'lck' } });
+    roll(l, 90, 60);
+    expect(() => beginPush(l)).toThrow(/can be pushed/);
   });
 
   test('head start gives each pursuer one penalty die on the first challenge only', () => {
@@ -275,4 +286,29 @@ test('removing a location closes the gap and moves people beyond it down a numbe
   ]);
   expect(state.participants.map(p => p.location)).toEqual([2, 1]);
   expect(() => removeLocation(state, 9)).toThrow(/no Location 9/);
+});
+
+test('locations past where the players have got stay hidden', () => {
+  const state = createChase({ id: 'c' });
+  setLocation(state, 1, { check: DEX, obstacle: 'a crowded market' });
+  setLocation(state, 2, { name: 'the wall', obstacle: '  a high wall ', check: CLIMB });
+  setLocation(state, 3, { name: 'the canal', check: DODGE });
+  addParticipant(state, person('q', 'quarry', 60, 8));
+  addParticipant(state, person('p', 'pursuer', 50, 7));
+  expect(state.locations[1]?.obstacle).toBe('a high wall');
+  const pcs = (p: { id: string }) => p.id === 'q';
+  markReached(state, pcs);
+  expect([isRevealed(state, 1), isRevealed(state, 2)]).toEqual([true, false]);
+  expect(publicLocationLabel(state, 2)).toBe('Location 2');
+  state.participants[1]!.location = 3; // a pursuer getting ahead reveals nothing
+  markReached(state, pcs);
+  expect(isRevealed(state, 3)).toBe(false);
+  state.participants[0]!.location = 2;
+  markReached(state, pcs);
+  expect(publicLocationLabel(state, 2)).toBe('Location 2 (the wall)');
+  state.participants[0]!.location = 1; // stepping back keeps what was seen
+  markReached(state, pcs);
+  expect(isRevealed(state, 2)).toBe(true);
+  setLocation(state, 2, { obstacle: '' });
+  expect(state.locations[1]?.obstacle).toBeUndefined();
 });
